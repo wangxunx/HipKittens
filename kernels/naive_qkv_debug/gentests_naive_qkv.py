@@ -4,14 +4,18 @@ from tqdm import trange
 import sys
 # from baselines.lightning_attn2 import lightning_attn2
 
+import numpy as np
+
 D_QK = 128
 D_VO = 128
 CHUNK_SIZE = 64
 
 def generate_inputs(B, H, N):
     q = torch.randn((B, H, N, D_QK), dtype=torch.bfloat16, device='cuda') / (D_QK ** 0.5)
+    # q = q * 0.0 + 1
     k = torch.randn((B, H, N, D_QK), dtype=torch.bfloat16, device='cuda') / (D_QK ** 0.5)
     v = torch.randn((B, H, N, D_VO), dtype=torch.bfloat16, device='cuda')
+    # v = v * 0.0 + 1
     s = torch.rand((H,), dtype=torch.float32, device='cuda')  # s stays float32
     return q, k, v, s
 
@@ -86,6 +90,12 @@ def save_test_case(q, k, v, s, o, n):
     print(f"slopes: {s}")
     import pdb
     pdb.set_trace()
+
+    # np.save("naive_qkv_input_q.npy", q.to(torch.float32).cpu().numpy())
+    # np.save("naive_qkv_input_k.npy", k.to(torch.float32).cpu().numpy())
+    # np.save("naive_qkv_input_v.npy", v.to(torch.float32).cpu().numpy())
+    # np.save("naive_qkv_output_o.npy", o.to(torch.float32).cpu().numpy())
+
     with open(filename, 'w') as f:    
         sf = s.to(torch.float32).flatten().cpu().numpy().tolist()
         qf = q.to(torch.float32).flatten().cpu().numpy().tolist()
@@ -114,13 +124,13 @@ def save_test_case(q, k, v, s, o, n):
             f.write(' ')
 
 def main():
-    torch.manual_seed(42)
+    torch.manual_seed(0)
     
-    # B, H = 16, 8
-    # sequence_lengths = [1024]
+    B, H = 16, 8
+    sequence_lengths = [1024]
 
-    B, H = 1, 1
-    sequence_lengths = [64]
+    # B, H = 1, 1
+    # sequence_lengths = [64]
     # sequence_lengths = [128]
     # sequence_lengths = [1024]
     

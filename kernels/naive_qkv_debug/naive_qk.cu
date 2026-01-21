@@ -7,45 +7,45 @@
 #define NUM_WARPS 8
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
-#ifndef ATTN_B
-constexpr int ATTN_B = 16;//1;//16; // batch size
-#endif
-
-#ifndef ATTN_H
-constexpr int ATTN_H = 8;  // number of heads
-#endif
-
-#ifndef ATTN_D
-constexpr int ATTN_D = 128; // dimension
-#endif
-
-#ifndef ATTN_F
-constexpr int ATTN_F = 128;  // number of features
-#endif
-
-#ifndef ATTN_N
-constexpr int ATTN_N = 1024; // sequence length
-#endif
-
-constexpr int CHUNK_SIZE = 64;
-
-// debug
 // #ifndef ATTN_B
-// constexpr int ATTN_B = 1;//16; // batch size
+// constexpr int ATTN_B = 16;//1;//16; // batch size
 // #endif
+
 // #ifndef ATTN_H
-// constexpr int ATTN_H = 1;  // number of heads
+// constexpr int ATTN_H = 8;  // number of heads
 // #endif
+
 // #ifndef ATTN_D
 // constexpr int ATTN_D = 128; // dimension
 // #endif
+
 // #ifndef ATTN_F
 // constexpr int ATTN_F = 128;  // number of features
 // #endif
+
 // #ifndef ATTN_N
-// constexpr int ATTN_N = 1024;//64;//1024; // sequence length
+// constexpr int ATTN_N = 1024; // sequence length
 // #endif
+
 // constexpr int CHUNK_SIZE = 64;
+
+// debug
+#ifndef ATTN_B
+constexpr int ATTN_B = 1;//16; // batch size
+#endif
+#ifndef ATTN_H
+constexpr int ATTN_H = 1;  // number of heads
+#endif
+#ifndef ATTN_D
+constexpr int ATTN_D = 128; // dimension
+#endif
+#ifndef ATTN_F
+constexpr int ATTN_F = 128;  // number of features
+#endif
+#ifndef ATTN_N
+constexpr int ATTN_N = 64;//1024;//64;//1024; // sequence length
+#endif
+constexpr int CHUNK_SIZE = 64;
 
 using namespace kittens;
 
@@ -456,6 +456,47 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
 
         __builtin_amdgcn_sched_barrier(0);
 
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    // float temp = (float)(attn_block[0].tiles[0][0].data[i]);
+                    float temp = (attn_block[0].tiles[0][0].data[i])[0]; // HIP_vector_type<float, 2>
+                    // printf("attn_block[0].data[%d]: %f\n", i, (attn_block[0].tiles[0][0].data[i]));
+                    printf("attn_block[0].tiles[0][0].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[0][0].data[i])[1];
+                    printf("attn_block[0].tiles[0][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [0][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = (attn_block[0].tiles[0][1].data[i])[0]; // HIP_vector_type<float, 2>
+                    printf("attn_block[0].tiles[0][1].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[0][1].data[i])[1];
+                    printf("attn_block[0].tiles[0][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = (attn_block[0].tiles[1][0].data[i])[0]; // HIP_vector_type<float, 2>
+                    printf("attn_block[0].tiles[1][0].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[1][0].data[i])[1];
+                    printf("attn_block[0].tiles[1][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = (attn_block[0].tiles[1][1].data[i])[0]; // HIP_vector_type<float, 2>
+                    printf("attn_block[0].tiles[1][1].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[1][1].data[i])[1];
+                    printf("attn_block[0].tiles[1][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+        }
+        
+
         // apply diag decay
         // TODO
 
@@ -585,11 +626,11 @@ inline void __hipCheckError( const char *file, const int line ) {
 }
 
 int main(int argc, char **argv) {
-    constexpr int B = 16;//1;// 16;
+    constexpr int B = 1;// 16;
     constexpr int D = 128;
-    constexpr int H = 8;//1;//8;
+    constexpr int H = 1;//8;
     constexpr int F = 128;
-    constexpr int N = 1024;//128;// 64;
+    constexpr int N = 64;//1024;//128;// 64;
 
     constexpr int warmup_iters = 1;
     constexpr int timing_iters = 1;
@@ -738,10 +779,10 @@ int main(int argc, char **argv) {
             std::cout << "o[" << i << "] = " << o[i]
               << " o_ref[" << i << "] = " << o_ref[i] << std::endl;
         }
-        else {
-            std::cout << "o[" << i << "] = " << o[i]
-              << " o_ref[" << i << "] = " << o_ref[i] << std::endl;
-        }
+        // else {
+        //     std::cout << "o[" << i << "] = " << o[i]
+        //       << " o_ref[" << i << "] = " << o_ref[i] << std::endl;
+        // }
         
         o_ref_file << o_ref[i] << ' ';
         o_file << o[i] << ' ';

@@ -7,45 +7,45 @@
 #define NUM_WARPS 8
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
-// #ifndef ATTN_B
-// constexpr int ATTN_B = 1;//16; // batch size
-// #endif
-
-// #ifndef ATTN_H
-// constexpr int ATTN_H = 8;  // number of heads
-// #endif
-
-// #ifndef ATTN_D
-// constexpr int ATTN_D = 128; // dimension
-// #endif
-
-// #ifndef ATTN_F
-// constexpr int ATTN_F = 128;  // number of features
-// #endif
-
-// #ifndef ATTN_N
-// constexpr int ATTN_N = 1024; // sequence length
-// #endif
-
-// constexpr int CHUNK_SIZE = 64;
-
-// debug
 #ifndef ATTN_B
-constexpr int ATTN_B = 1;//16; // batch size
+constexpr int ATTN_B = 16; // batch size
 #endif
+
 #ifndef ATTN_H
-constexpr int ATTN_H = 1;  // number of heads
+constexpr int ATTN_H = 8;  // number of heads
 #endif
+
 #ifndef ATTN_D
 constexpr int ATTN_D = 128; // dimension
 #endif
+
 #ifndef ATTN_F
 constexpr int ATTN_F = 128;  // number of features
 #endif
+
 #ifndef ATTN_N
-constexpr int ATTN_N = 64;//1024; // sequence length
+constexpr int ATTN_N = 1024; // sequence length
 #endif
+
 constexpr int CHUNK_SIZE = 64;
+
+// debug
+// #ifndef ATTN_B
+// constexpr int ATTN_B = 1;//16; // batch size
+// #endif
+// #ifndef ATTN_H
+// constexpr int ATTN_H = 1;  // number of heads
+// #endif
+// #ifndef ATTN_D
+// constexpr int ATTN_D = 128; // dimension
+// #endif
+// #ifndef ATTN_F
+// constexpr int ATTN_F = 128;  // number of features
+// #endif
+// #ifndef ATTN_N
+// constexpr int ATTN_N = 1024;//64;//1024; // sequence length
+// #endif
+// constexpr int CHUNK_SIZE = 64;
 
 using namespace kittens;
 
@@ -375,16 +375,18 @@ void qkv_kernel(const lightning_attn2_globals globals, int N)
 
     // Initialize all of the register tiles.
     q_tile<ATTN_F, bf16> q_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
-    q_tile_transposed<ATTN_F, bf16> q_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
+    q_tile_transposed<ATTN_F, bf16> q_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64, rt_16x32_s
     k_tile<ATTN_F, bf16> k_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
-    k_tile_transposed<ATTN_F, bf16> k_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
+    k_tile_transposed<ATTN_F, bf16> k_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64, rt_16x32_s
     
-    v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
+    // v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
+    v_tile<ATTN_D, bf16, col_l, rt_32x32_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
     o_tile_transposed<ATTN_D, float, col_l, rt_32x32_s> o_reg;          // [ATTN_D, CHUNK_SIZE], 128x64
     // o_tile_transposed<CHUNK_SIZE, float, col_l, rt_32x32_s> o_reg;          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, float, col_l, rt_32x32_s> attn_block[2];          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16;         // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> attn_block_bf16_in;    // [64x64], 内部16x32 为了适配mma_AtB api
+    attn_tile<ATTN_D, float, col_l, rt_32x32_s> attn_block[2];          // [CHUNK_SIZE, CHUNK_SIZE], 64x64, 2x2个subtiles, rt_32x32_s
+    attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16;         // [CHUNK_SIZE, CHUNK_SIZE], 64x64, 2x2个subtiles, rt_32x32_s
+    attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> attn_block_bf16_in;    // [64x64], 内部16x32，4x2个subtiles 为了适配mma_AtB api
+    // attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16_in;    // [64x64], 内部16x32，4x2个subtiles 为了适配mma_AtB api
 
     zero(o_reg);
 
@@ -457,6 +459,55 @@ void qkv_kernel(const lightning_attn2_globals globals, int N)
 
         __builtin_amdgcn_sched_barrier(0);
 
+#ifdef DEBUG
+        // DEBUG dump result QK
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            // printf("attn_block[0] height %d width %d\n", attn_block[0].height, attn_block[0].width);
+
+            // tile[0][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    // float temp = (float)(attn_block[0].tiles[0][0].data[i]);
+                    float temp = (attn_block[0].tiles[0][0].data[i])[0]; // HIP_vector_type<float, 2>
+                    // printf("attn_block[0].data[%d]: %f\n", i, (attn_block[0].tiles[0][0].data[i]));
+                    printf("attn_block[0].tiles[0][0].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[0][0].data[i])[1];
+                    printf("attn_block[0].tiles[0][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // int total_num_elements = attn_block[0]
+            // for (int i = total_num_elements - 8; i < total_num_elements; i++) {
+            
+            // tile [0][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = (attn_block[0].tiles[0][1].data[i])[0]; // HIP_vector_type<float, 2>
+                    printf("attn_block[0].tiles[0][1].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[0][1].data[i])[1];
+                    printf("attn_block[0].tiles[0][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = (attn_block[0].tiles[1][0].data[i])[0]; // HIP_vector_type<float, 2>
+                    printf("attn_block[0].tiles[1][0].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[1][0].data[i])[1];
+                    printf("attn_block[0].tiles[1][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = (attn_block[0].tiles[1][1].data[i])[0]; // HIP_vector_type<float, 2>
+                    printf("attn_block[0].tiles[1][1].data[%d]: %f\n", i*2, temp);
+                    temp = (attn_block[0].tiles[1][1].data[i])[1];
+                    printf("attn_block[0].tiles[1][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+        }
+#endif
+
         // apply diag decay
         // TODO
 
@@ -465,18 +516,134 @@ void qkv_kernel(const lightning_attn2_globals globals, int N)
         // attn_block_bf16 [CHUNK_SIZE, CHUNK_SIZE], 64x64
         copy(subtile_inplace<32>(attn_block_bf16, 0), subtile_inplace<32>(attn_block[0], 0));
         copy(subtile_inplace<32>(attn_block_bf16, 1), subtile_inplace<32>(attn_block[0], 1));
+#ifdef DEBUG
+        // DEBUG dump result QK in bf16
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            // printf("attn_block_bf16 height %d width %d\n", attn_block_bf16.height, attn_block_bf16.width);
+
+            // tile[0][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[0][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[0][0].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[0][0].data[i].y));
+                    printf("attn_block_bf16.tiles[0][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [0][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[0][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[0][1].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[0][1].data[i].y));
+                    printf("attn_block_bf16.tiles[0][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[1][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[1][0].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[1][0].data[i].y));
+                    printf("attn_block_bf16.tiles[1][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[1][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[1][1].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[1][1].data[i].y));
+                    printf("attn_block_bf16.tiles[1][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+        }
+#endif
         attn_block_bf16_in = *reinterpret_cast<attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s>*>(&attn_block_bf16);
         asm volatile("s_waitcnt lgkmcnt(0)");
         asm volatile("s_waitcnt vmcnt(0)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
+#ifdef DEBUG
+        // DEBUG dump result QK in bf16， 4x2 subtiles
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            // printf("attn_block_bf16_in height %d width %d\n", attn_block_bf16_in.height, attn_block_bf16_in.width);
 
+            // tile[0][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[0][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[0][0].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[0][0].data[i].y));
+                    printf("attn_block_bf16_in.tiles[0][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [0][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[0][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[0][1].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[0][1].data[i].y));
+                    printf("attn_block_bf16_in.tiles[0][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    // float temp = __bfloat162float((attn_block_bf16_in.tiles[1][0].data[i].x)); // HIP_vector_type<float, 2>
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[2][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[1][0].data[%d]: %f\n", i*2, temp);
+                    // temp = __bfloat162float((attn_block_bf16_in.tiles[1][0].data[i].y));
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[2][0].data[i].y));
+                    printf("attn_block_bf16_in.tiles[1][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    // float temp = __bfloat162float((attn_block_bf16_in.tiles[1][1].data[i].x)); // HIP_vector_type<float, 2>
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[2][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[1][1].data[%d]: %f\n", i*2, temp);
+                    // temp = __bfloat162float((attn_block_bf16_in.tiles[1][1].data[i].y));
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[2][1].data[i].y));
+                    printf("attn_block_bf16_in.tiles[1][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+        }
+
+        // DEBUG dump
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            for (int i = 0; i < 8; i++) {
+                // printf("v_smem[0].data[%d]: %f\n", i, (float)v_smem[0].data[i]);
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("q_smem[0].data[%d]: %f\n", i, __bfloat162float(q_smem[0].data[i]));
+            }
+            int total_num_elements = q_smem[0].rows * q_smem[0].cols;
+            for (int i = total_num_elements - 8; i < total_num_elements; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("q_smem[0].data[%d]: %f\n", i, __bfloat162float(q_smem[0].data[i]));
+            }
+        }
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            for (int i = 0; i < 8; i++) {
+                // printf("v_smem[0].data[%d]: %f\n", i, (float)v_smem[0].data[i]);
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("v_smem[0].data[%d]: %f\n", i, __bfloat162float(v_smem[0].data[i]));
+            }
+            int total_num_elements = v_smem[0].rows * v_smem[0].cols;
+            for (int i = total_num_elements - 8; i < total_num_elements; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("v_smem[0].data[%d]: %f\n", i, __bfloat162float(v_smem[0].data[i]));
+            }
+        }
+#endif
         // calculate AV
         // v_reg [CHUNK_SIZE, ATTN_D], 64x128
         // o_reg [ATTN_D, CHUNK_SIZE], 128x64
         // v_reg * attn_block_bf16 -> o_reg, 64x128^T * 64x64 = 128x64, 这里的块太大了
-        mma_AtB(o_reg, v_reg, attn_block_bf16_in, o_reg); // 这个api对B的shape有要求?确定？，16x32
+        // mma_AtB(o_reg, v_reg, attn_block_bf16_in, o_reg); // 这个api对B的shape有要求?确定？，16x32
+        mma_AtB(o_reg, v_reg, attn_block_bf16, o_reg); // subtile 32x32
 
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_sched_barrier(0);
@@ -585,11 +752,11 @@ inline void __hipCheckError( const char *file, const int line ) {
 }
 
 int main(int argc, char **argv) {
-    constexpr int B = 1;// 16;
+    constexpr int B = 16;//1;// 16;
     constexpr int D = 128;
-    constexpr int H = 1;//8;
+    constexpr int H = 8;//1;//8;
     constexpr int F = 128;
-    constexpr int N = 64;
+    constexpr int N = 1024;//64;
 
     constexpr int warmup_iters = 1;
     constexpr int timing_iters = 1;
@@ -726,10 +893,10 @@ int main(int argc, char **argv) {
             std::cout << "o[" << i << "] = " << o[i]
               << " o_ref[" << i << "] = " << o_ref[i] << std::endl;
         }
-        else {
-            std::cout << "o[" << i << "] = " << o[i]
-              << " o_ref[" << i << "] = " << o_ref[i] << std::endl;
-        }
+        // else {
+        //     std::cout << "o[" << i << "] = " << o[i]
+        //       << " o_ref[" << i << "] = " << o_ref[i] << std::endl;
+        // }
         
         o_ref_file << o_ref[i] << ' ';
         o_file << o[i] << ' ';

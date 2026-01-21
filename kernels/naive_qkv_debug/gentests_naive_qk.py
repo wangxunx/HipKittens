@@ -10,8 +10,10 @@ CHUNK_SIZE = 64
 
 def generate_inputs(B, H, N):
     q = torch.randn((B, H, N, D_QK), dtype=torch.bfloat16, device='cuda') / (D_QK ** 0.5)
+    q = q * 0.0 + 1
     k = torch.randn((B, H, N, D_QK), dtype=torch.bfloat16, device='cuda') / (D_QK ** 0.5)
     v = torch.randn((B, H, N, D_VO), dtype=torch.bfloat16, device='cuda')
+    v = v * 0.0 + 1
     s = torch.rand((H,), dtype=torch.float32, device='cuda')  # s stays float32
     return q, k, v, s
 
@@ -63,26 +65,26 @@ def linear_attn_naive_qk_lightning_version(q, k, v):
         o_qk[:, :, start:end, :] = qk
     return o_qk
 
-def linear_attn_naive_qkv_lightning_version(q, k, v):
-    b, h, n, d = q.shape
-    num_chunks = (n + CHUNK_SIZE - 1) // CHUNK_SIZE
-    # o_qk = torch.zeros(b, h, n, CHUNK_SIZE).to(q.device).to(torch.bfloat16)
-    o = torch.empty_like(q)
+# def linear_attn_naive_qkv_lightning_version(q, k, v):
+#     b, h, n, d = q.shape
+#     num_chunks = (n + CHUNK_SIZE - 1) // CHUNK_SIZE
+#     # o_qk = torch.zeros(b, h, n, CHUNK_SIZE).to(q.device).to(torch.bfloat16)
+#     o = torch.empty_like(q)
 
-    for i in range(num_chunks):
-        start = i * CHUNK_SIZE
-        end = min(start + CHUNK_SIZE, n)
-        q_chunk = q[:, :, start:end, :]
-        k_chunk = k[:, :, start:end, :]
-        v_chunk = v[:, :, start:end, :]
+#     for i in range(num_chunks):
+#         start = i * CHUNK_SIZE
+#         end = min(start + CHUNK_SIZE, n)
+#         q_chunk = q[:, :, start:end, :]
+#         k_chunk = k[:, :, start:end, :]
+#         v_chunk = v[:, :, start:end, :]
     
-        qk = torch.matmul(q_chunk, k_chunk.transpose(2, 3))
-        o_chunk = torch.matmul(qk, v_chunk)
-        o[:, :, start:end, :] = qk
-    return o
+#         qk = torch.matmul(q_chunk, k_chunk.transpose(2, 3))
+#         o_chunk = torch.matmul(qk, v_chunk)
+#         o[:, :, start:end, :] = qk
+#     return o
 
 def save_test_case(q, k, v, s, o, n):
-    filename = f'naive_qkv_randn_{n}.txt'
+    filename = f'naive_qk_randn_{n}.txt'
     print(f"slopes: {s}")
     import pdb
     pdb.set_trace()
@@ -116,11 +118,11 @@ def save_test_case(q, k, v, s, o, n):
 def main():
     torch.manual_seed(42)
     
-    B, H = 16, 8
-    sequence_lengths = [1024]
+    # B, H = 16, 8
+    # sequence_lengths = [1024]
 
-    # B, H = 1, 1
-    # sequence_lengths = [64]
+    B, H = 1, 1
+    sequence_lengths = [64]
     # sequence_lengths = [128]
     # sequence_lengths = [1024]
     
