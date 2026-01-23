@@ -7,45 +7,46 @@
 #define NUM_WARPS 8
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
-// #ifndef ATTN_B
-// constexpr int ATTN_B = 16;//1;//16; // batch size
-// #endif
-
-// #ifndef ATTN_H
-// constexpr int ATTN_H = 8;  // number of heads
-// #endif
-
-// #ifndef ATTN_D
-// constexpr int ATTN_D = 128; // dimension
-// #endif
-
-// #ifndef ATTN_F
-// constexpr int ATTN_F = 128;  // number of features
-// #endif
-
-// #ifndef ATTN_N
-// constexpr int ATTN_N = 1024; // sequence length
-// #endif
-
-// constexpr int CHUNK_SIZE = 64;
-
-// debug
 #ifndef ATTN_B
-constexpr int ATTN_B = 1;//16; // batch size
+constexpr int ATTN_B = 16; // batch size
 #endif
+
 #ifndef ATTN_H
-constexpr int ATTN_H = 1;  // number of heads
+constexpr int ATTN_H = 8;  // number of heads
 #endif
+
 #ifndef ATTN_D
 constexpr int ATTN_D = 128; // dimension
 #endif
+
 #ifndef ATTN_F
 constexpr int ATTN_F = 128;  // number of features
 #endif
+
 #ifndef ATTN_N
-constexpr int ATTN_N = 64;//1024;//64;//1024; // sequence length
+constexpr int ATTN_N = 1024; // sequence length
 #endif
+
 constexpr int CHUNK_SIZE = 64;
+constexpr int V_CHUNK_SIZE = 32;
+
+// debug
+// #ifndef ATTN_B
+// constexpr int ATTN_B = 1;//16; // batch size
+// #endif
+// #ifndef ATTN_H
+// constexpr int ATTN_H = 1;  // number of heads
+// #endif
+// #ifndef ATTN_D
+// constexpr int ATTN_D = 128; // dimension
+// #endif
+// #ifndef ATTN_F
+// constexpr int ATTN_F = 128;  // number of features
+// #endif
+// #ifndef ATTN_N
+// constexpr int ATTN_N = 1024;//64;//1024; // sequence length
+// #endif
+// constexpr int CHUNK_SIZE = 64;
 
 using namespace kittens;
 
@@ -62,11 +63,14 @@ using G = kittens::group<NUM_WARPS>;
 template<int F, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using q_tile = rt<T, CHUNK_SIZE, F, L, S>;
 template<int F, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using q_tile_transposed = rt<T, F, CHUNK_SIZE, L, S>;
 template<int F, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using k_tile = rt<T, CHUNK_SIZE, F, L, S>;
-template<int D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using v_tile = rt<T, CHUNK_SIZE, D, L, S>;
+// template<int D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using v_tile = rt<T, CHUNK_SIZE, D, L, S>;
+template<int D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using v_tile = rt<T, CHUNK_SIZE, V_CHUNK_SIZE, L, S>;
 template<int F, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using k_tile_transposed = rt<T, F, CHUNK_SIZE, L, S>;
 template<int D, typename T=float, typename L=col_l, typename S=rt_16x32_4_s> using attn_tile = rt<T, CHUNK_SIZE, CHUNK_SIZE, L, S>;
-template<int D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using o_tile = rt<T, CHUNK_SIZE, D, L, S>;
-template<int D, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using o_tile_transposed = rt<T, D, CHUNK_SIZE, L, S>;
+// template<int D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using o_tile = rt<T, CHUNK_SIZE, D, L, S>;
+// template<int D, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using o_tile_transposed = rt<T, D, CHUNK_SIZE, L, S>;
+template<int D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using o_tile = rt<T, CHUNK_SIZE, V_CHUNK_SIZE, L, S>;
+template<int D, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using o_tile_transposed = rt<T, V_CHUNK_SIZE, CHUNK_SIZE, L, S>;
 
 using _gl_QKVO = gl<bf16, -1, -1, -1, -1>;
 
@@ -115,12 +119,13 @@ struct lightning_attn2_globals {
     // dim3 block() {return dim3(ATTN_F, 1, 1);}
     dim3 block() {return dim3(NUM_THREADS);}
     // dim3 grid() { return dim3(ATTN_H, ((ATTN_N / CHUNK_SIZE + NUM_WARPS - 1) / NUM_WARPS), ATTN_B); }
-    dim3 grid() {return dim3(ATTN_H, ATTN_B);}
-    // dim3 grid() {return dim3(ATTN_B, ATTN_H);}
+    // dim3 grid() {return dim3(ATTN_H, ATTN_B);}
+    // dim3 grid() {return dim3(ATTN_H, ATTN_B, ATTN_D / V_CHUNK_SIZE);} // parallel in V's ATTN_D dim
+    dim3 grid() {return dim3(ATTN_D / V_CHUNK_SIZE, ATTN_H, ATTN_B);} // parallel in V's ATTN_D dim
     size_t dynamic_shared_memory() { return MAX_SHARED_MEMORY; }
 };
 
-// __global__ __launch_bounds__(NUM_THREADS, 1)
+
 // __global__ __launch_bounds__(NUM_THREADS, 2)
 // void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
 // {
@@ -303,7 +308,7 @@ struct lightning_attn2_globals {
 // }
 
 __global__ __launch_bounds__(NUM_THREADS, 2)
-void qk_kernel(const lightning_attn2_globals globals, int N)
+void qkv_kernel(const lightning_attn2_globals globals, int N)
 {
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
@@ -321,16 +326,23 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
     // st_v_tile (&v_smem)[2]       = al.allocate<st_v_tile, 2>();
     // // st_o_tile (&o_smem)[2]       = al.allocate<st_o_tile, 2>();
     // st_kv_state_tile (&kv_state_smem) = al.allocate<st_kv_state_tile>();
-    st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&q_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();
-    st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&k_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();
-    st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s> (&v_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>, 2>();
-    st_bf<ATTN_F, ATTN_D, st_32x32_s> (&kv_state_smem) = al.allocate<st_bf<ATTN_F, ATTN_D, st_32x32_s>>();
+
+    st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&q_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();                   // 64x128 x2 x2 = 32768 B = 32 KB
+    st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&k_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();                   // 64x128 x2 x2 = 32768 B = 32 KB
+    // st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s> (&v_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>, 2>();
+    st_bf<CHUNK_SIZE, V_CHUNK_SIZE, st_32x32_s> (&v_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, V_CHUNK_SIZE, st_32x32_s>, 2>();    // 64x32 x2 x2 = 8192 B = 8 KB
+    // st_bf<ATTN_F, ATTN_D, st_32x32_s> (&kv_state_smem) = al.allocate<st_bf<ATTN_F, ATTN_D, st_32x32_s>>();
 
     // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&q_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
     // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&k_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
 
-    const int head_idx = blockIdx.x;
-    const int batch_idx = blockIdx.y;
+    // const int head_idx = blockIdx.x;
+    // const int batch_idx = blockIdx.y;
+    // const int v_block_idx = blockIdx.z;
+    const int head_idx = blockIdx.y;
+    const int batch_idx = blockIdx.z;
+    const int v_block_idx = blockIdx.x;
+
     // printf("head_idx %d batch_idx %d\n", head_idx, batch_idx);
     // float slope = globals.slopes[head_idx];
     float slope = reinterpret_cast<float*>(globals.slopes)[head_idx];
@@ -375,16 +387,18 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
 
     // Initialize all of the register tiles.
     q_tile<ATTN_F, bf16> q_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
-    q_tile_transposed<ATTN_F, bf16> q_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
+    q_tile_transposed<ATTN_F, bf16> q_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64, rt_16x32_s
     k_tile<ATTN_F, bf16> k_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
-    k_tile_transposed<ATTN_F, bf16> k_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
+    k_tile_transposed<ATTN_F, bf16> k_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64, rt_16x32_s
     
-    v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
-    // o_tile_transposed<ATTN_D, float, col_l, rt_32x32_s> o_reg;          // [ATTN_D, CHUNK_SIZE], 128x64
-    o_tile_transposed<CHUNK_SIZE, float, col_l, rt_32x32_s> o_reg;          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, float, col_l, rt_32x32_s> attn_block[2];          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16;         // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> attn_block_bf16_in;    // [64x64], 内部16x32 为了适配mma_AtB api
+    // v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
+    v_tile<ATTN_D, bf16, col_l, rt_32x32_s> v_reg;                    // [CHUNK_SIZE, V_CHUNK_SIZE], 64x32
+    o_tile_transposed<ATTN_D, float, col_l, rt_32x32_s> o_reg;          // [V_CHUNK_SIZE, CHUNK_SIZE], 32x64
+    // o_tile_transposed<CHUNK_SIZE, float, col_l, rt_32x32_s> o_reg;          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
+    attn_tile<ATTN_D, float, col_l, rt_32x32_s> attn_block[2];          // [CHUNK_SIZE, CHUNK_SIZE], 64x64, 2x2个subtiles, rt_32x32_s
+    attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16;         // [CHUNK_SIZE, CHUNK_SIZE], 64x64, 2x2个subtiles, rt_32x32_s
+    attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> attn_block_bf16_in;    // [64x64], 内部16x32，4x2个subtiles 为了适配mma_AtB api
+    // attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16_in;    // [64x64], 内部16x32，4x2个subtiles 为了适配mma_AtB api
 
     zero(o_reg);
 
@@ -396,7 +410,8 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
     constexpr int bytes_per_thread = st_32x32_s::template bytes_per_thread<T>();
     constexpr int bytes_per_memcpy = bytes_per_thread * NUM_THREADS;
     constexpr int memcpy_per_tile_q_k = CHUNK_SIZE * ATTN_F * sizeof(T) / bytes_per_memcpy;
-    constexpr int memcpy_per_tile_v = CHUNK_SIZE * ATTN_D * sizeof(T) / bytes_per_memcpy;
+    // constexpr int memcpy_per_tile_v = CHUNK_SIZE * ATTN_D * sizeof(T) / bytes_per_memcpy;
+    constexpr int memcpy_per_tile_v = CHUNK_SIZE * V_CHUNK_SIZE * sizeof(T) / bytes_per_memcpy;
     uint32_t swizzled_offsets_Q[memcpy_per_tile_q_k];
     uint32_t swizzled_offsets_V[memcpy_per_tile_v];
     uint32_t swizzled_offsets_K[memcpy_per_tile_q_k];
@@ -406,6 +421,7 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
 
 
     for (int block = 0; block < blocks; block++) {
+        zero(o_reg);
         // Load Q, K, V tiles from global memory to shared memory
 
         // WRONG
@@ -415,7 +431,8 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
         // CORRECT
         G::load<1, false>(q_smem[tic], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q);
         G::load<1, false>(k_smem[tic], globals.Kg, {batch_idx, block, head_idx, 0}, swizzled_offsets_K);
-        G::load<1, false>(v_smem[tic], globals.Vg, {batch_idx, block, head_idx, 0}, swizzled_offsets_V);
+        // G::load<1, false>(v_smem[tic], globals.Vg, {batch_idx, block, head_idx, 0}, swizzled_offsets_V);
+        G::load<1, false>(v_smem[tic], globals.Vg, {batch_idx, block, head_idx, v_block_idx});
         
 
         // G::load<1, false>(q_smem[tic], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q);
@@ -456,7 +473,12 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
 
         __builtin_amdgcn_sched_barrier(0);
 
+#ifdef DEBUG
+        // DEBUG dump result QK
         if (blockIdx.x == 0 && blockIdx.y == 0) {
+            // printf("attn_block[0] height %d width %d\n", attn_block[0].height, attn_block[0].width);
+
+            // tile[0][0]
             for (int i = 0; i < 4; i++) {
                 if (threadIdx.x == 0 && threadIdx.y == 0) {
                     // float temp = (float)(attn_block[0].tiles[0][0].data[i]);
@@ -467,6 +489,9 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
                     printf("attn_block[0].tiles[0][0].data[%d]: %f\n", i*2+1, temp);
                 }
             }
+            // int total_num_elements = attn_block[0]
+            // for (int i = total_num_elements - 8; i < total_num_elements; i++) {
+            
             // tile [0][1]
             for (int i = 0; i < 4; i++) {
                 if (threadIdx.x == 0 && threadIdx.y == 0) {
@@ -495,7 +520,7 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
                 }
             }
         }
-        
+#endif
 
         // apply diag decay
         // TODO
@@ -505,33 +530,150 @@ void qk_kernel(const lightning_attn2_globals globals, int N)
         // attn_block_bf16 [CHUNK_SIZE, CHUNK_SIZE], 64x64
         copy(subtile_inplace<32>(attn_block_bf16, 0), subtile_inplace<32>(attn_block[0], 0));
         copy(subtile_inplace<32>(attn_block_bf16, 1), subtile_inplace<32>(attn_block[0], 1));
+#ifdef DEBUG
+        // DEBUG dump result QK in bf16
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            // printf("attn_block_bf16 height %d width %d\n", attn_block_bf16.height, attn_block_bf16.width);
+
+            // tile[0][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[0][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[0][0].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[0][0].data[i].y));
+                    printf("attn_block_bf16.tiles[0][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [0][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[0][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[0][1].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[0][1].data[i].y));
+                    printf("attn_block_bf16.tiles[0][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[1][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[1][0].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[1][0].data[i].y));
+                    printf("attn_block_bf16.tiles[1][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16.tiles[1][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16.tiles[1][1].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16.tiles[1][1].data[i].y));
+                    printf("attn_block_bf16.tiles[1][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+        }
+#endif
         attn_block_bf16_in = *reinterpret_cast<attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s>*>(&attn_block_bf16);
         asm volatile("s_waitcnt lgkmcnt(0)");
         asm volatile("s_waitcnt vmcnt(0)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
+#ifdef DEBUG
+        // DEBUG dump result QK in bf16， 4x2 subtiles
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            // printf("attn_block_bf16_in height %d width %d\n", attn_block_bf16_in.height, attn_block_bf16_in.width);
 
-        // // calculate AV
-        // // v_reg [CHUNK_SIZE, ATTN_D], 64x128
-        // // o_reg [ATTN_D, CHUNK_SIZE], 128x64
-        // // v_reg * attn_block_bf16 -> o_reg, 64x128^T * 64x64 = 128x64, 这里的块太大了
+            // tile[0][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[0][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[0][0].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[0][0].data[i].y));
+                    printf("attn_block_bf16_in.tiles[0][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [0][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[0][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[0][1].data[%d]: %f\n", i*2, temp);
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[0][1].data[i].y));
+                    printf("attn_block_bf16_in.tiles[0][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][0]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    // float temp = __bfloat162float((attn_block_bf16_in.tiles[1][0].data[i].x)); // HIP_vector_type<float, 2>
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[2][0].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[1][0].data[%d]: %f\n", i*2, temp);
+                    // temp = __bfloat162float((attn_block_bf16_in.tiles[1][0].data[i].y));
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[2][0].data[i].y));
+                    printf("attn_block_bf16_in.tiles[1][0].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+            // tile [1][1]
+            for (int i = 0; i < 4; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0) {
+                    // float temp = __bfloat162float((attn_block_bf16_in.tiles[1][1].data[i].x)); // HIP_vector_type<float, 2>
+                    float temp = __bfloat162float((attn_block_bf16_in.tiles[2][1].data[i].x)); // HIP_vector_type<float, 2>
+                    printf("attn_block_bf16_in.tiles[1][1].data[%d]: %f\n", i*2, temp);
+                    // temp = __bfloat162float((attn_block_bf16_in.tiles[1][1].data[i].y));
+                    temp = __bfloat162float((attn_block_bf16_in.tiles[2][1].data[i].y));
+                    printf("attn_block_bf16_in.tiles[1][1].data[%d]: %f\n", i*2+1, temp);
+                }
+            }
+        }
+
+        // DEBUG dump
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            for (int i = 0; i < 8; i++) {
+                // printf("v_smem[0].data[%d]: %f\n", i, (float)v_smem[0].data[i]);
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("q_smem[0].data[%d]: %f\n", i, __bfloat162float(q_smem[0].data[i]));
+            }
+            int total_num_elements = q_smem[0].rows * q_smem[0].cols;
+            for (int i = total_num_elements - 8; i < total_num_elements; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("q_smem[0].data[%d]: %f\n", i, __bfloat162float(q_smem[0].data[i]));
+            }
+        }
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            for (int i = 0; i < 8; i++) {
+                // printf("v_smem[0].data[%d]: %f\n", i, (float)v_smem[0].data[i]);
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("v_smem[0].data[%d]: %f\n", i, __bfloat162float(v_smem[0].data[i]));
+            }
+            int total_num_elements = v_smem[0].rows * v_smem[0].cols;
+            for (int i = total_num_elements - 8; i < total_num_elements; i++) {
+                if (threadIdx.x == 0 && threadIdx.y == 0)
+                    printf("v_smem[0].data[%d]: %f\n", i, __bfloat162float(v_smem[0].data[i]));
+            }
+        }
+#endif
+        // calculate AV
+        // v_reg [CHUNK_SIZE, ATTN_D], 64x128
+        // o_reg [ATTN_D, CHUNK_SIZE], 128x64
+        // v_reg * attn_block_bf16 -> o_reg, 64x128^T * 64x64 = 128x64, 这里的块太大了
         // mma_AtB(o_reg, v_reg, attn_block_bf16_in, o_reg); // 这个api对B的shape有要求?确定？，16x32
+        mma_AtB(o_reg, v_reg, attn_block_bf16, o_reg); // subtile 32x32
 
-        // __builtin_amdgcn_s_setprio(0);
-        // __builtin_amdgcn_sched_barrier(0);
-        // __builtin_amdgcn_s_barrier();
-        // __builtin_amdgcn_sched_barrier(0);
+        __builtin_amdgcn_s_setprio(0);
+        __builtin_amdgcn_sched_barrier(0);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
 
 
         
         
-        // o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed;
-        // transpose(o_reg_transposed, attn_block_bf16_in);
-        attn_tile<ATTN_D, float, row_l, rt_32x32_s> attn_block_trans;
-        transpose(attn_block_trans, attn_block[0]);
-        store<1>(globals.Og, attn_block_trans, {batch_idx, block, head_idx, 0});
-        // store<1>(globals.Og, attn_block_trans, {batch_idx, block*CHUNK_SIZE, head_idx, 0});
+        o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed; // [CHUNK_SIZE, V_CHUNK_SIZE]
+        transpose(o_reg_transposed, o_reg);
+        // store<1>(globals.Og, o_reg_transposed, {batch_idx, block, head_idx, 0});
+        store<1>(globals.Og, o_reg_transposed, {batch_idx, block, head_idx, v_block_idx});
+        // attn_tile<ATTN_D, float, row_l, rt_32x32_s> attn_block_trans;
+        // transpose(attn_block_trans, attn_block[0]);
+        // store<1>(globals.Og, attn_block_trans, {batch_idx, block, head_idx, 0});
     }
 
     // o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed;
@@ -576,8 +718,7 @@ lightning_attn2_globals lightning_attn2_init(
     _gl_QKVO             v_arg{d_v, B, N, H, ATTN_D};
     // _gl_QKVO             o_arg{d_o, B, N, H, ATTN_D};
     // Take QK as output
-    // _gl_QKVO             o_arg{d_o, B, N, H, N};
-    _gl_QKVO             o_arg{d_o, B, N, H, CHUNK_SIZE};
+    _gl_QKVO             o_arg{d_o, B, N, H, ATTN_D};
 
     globals g{
         q_arg, k_arg, k_split_arg, v_arg, o_arg,
@@ -626,33 +767,29 @@ inline void __hipCheckError( const char *file, const int line ) {
 }
 
 int main(int argc, char **argv) {
-    constexpr int B = 1;// 16;
+    constexpr int B = 16;//1;// 16;
     constexpr int D = 128;
-    constexpr int H = 1;//8;
+    constexpr int H = 8;//1;//8;
     constexpr int F = 128;
-    constexpr int N = 64;//1024;//128;// 64;
+    constexpr int N = 1024;//64;
 
     constexpr int warmup_iters = 1;
     constexpr int timing_iters = 1;
 
     int TOTAL_ELEMENTS_QK = B * H * N * D;
     int TOTAL_ELEMENTS_VO = B * H * N * F;
-    int TOTAL_ELEMENTS_QK_OUTPUT = B * H * N * CHUNK_SIZE;
 
     float *slopes      = new float[H];
     float *q           = new float[TOTAL_ELEMENTS_QK];
     float *k           = new float[TOTAL_ELEMENTS_QK];
     float *v           = new float[TOTAL_ELEMENTS_VO];
-    // float *o_ref       = new float[TOTAL_ELEMENTS_VO];
-    // float *o           = new float[TOTAL_ELEMENTS_VO];
-    float *o_ref       = new float[TOTAL_ELEMENTS_QK_OUTPUT];
-    float *o           = new float[TOTAL_ELEMENTS_QK_OUTPUT];
+    float *o_ref       = new float[TOTAL_ELEMENTS_VO];
+    float *o           = new float[TOTAL_ELEMENTS_VO];
     
     bf16 *q_bf        = new bf16[TOTAL_ELEMENTS_QK];
     bf16 *k_bf        = new bf16[TOTAL_ELEMENTS_QK];
     bf16 *v_bf        = new bf16[TOTAL_ELEMENTS_VO];
-    // bf16 *o_bf        = new bf16[TOTAL_ELEMENTS_VO];
-    bf16 *o_bf        = new bf16[TOTAL_ELEMENTS_QK_OUTPUT];
+    bf16 *o_bf        = new bf16[TOTAL_ELEMENTS_VO];
 
     if (argc > 1) {
         std::ifstream infile(argv[1]);
@@ -678,10 +815,8 @@ int main(int argc, char **argv) {
         std::cout << "Finished loading " << TOTAL_ELEMENTS_VO << " elements of V" << std::endl;
 
         // 5. Read O reference
-        // for(int i = 0; i < TOTAL_ELEMENTS_VO; i++) infile >> o_ref[i];
-        // std::cout << "Finished loading " << TOTAL_ELEMENTS_VO << " elements of O_REF" << std::endl;
-        for(int i = 0; i < TOTAL_ELEMENTS_QK_OUTPUT; i++) infile >> o_ref[i];
-        std::cout << "Finished loading " << TOTAL_ELEMENTS_QK_OUTPUT << " elements of O_REF" << std::endl;
+        for(int i = 0; i < TOTAL_ELEMENTS_VO; i++) infile >> o_ref[i];
+        std::cout << "Finished loading " << TOTAL_ELEMENTS_VO << " elements of O_REF" << std::endl;
     }
 
     // Convert to bf16
@@ -700,8 +835,7 @@ int main(int argc, char **argv) {
     hipMalloc(&d_q,        TOTAL_ELEMENTS_QK * sizeof(bf16));
     hipMalloc(&d_k,        TOTAL_ELEMENTS_QK * sizeof(bf16));
     hipMalloc(&d_v,        TOTAL_ELEMENTS_VO * sizeof(bf16));
-    // hipMalloc(&d_o,        TOTAL_ELEMENTS_VO * sizeof(bf16));
-    hipMalloc(&d_o,        TOTAL_ELEMENTS_QK_OUTPUT * sizeof(bf16));
+    hipMalloc(&d_o,        TOTAL_ELEMENTS_VO * sizeof(bf16));
 
     hipMemcpy(d_slopes, slopes,   H            * sizeof(float), hipMemcpyHostToDevice);
     hipMemcpy(d_q,      q_bf,     TOTAL_ELEMENTS_QK * sizeof(bf16),  hipMemcpyHostToDevice);
@@ -709,8 +843,7 @@ int main(int argc, char **argv) {
     hipMemcpy(d_v,      v_bf,     TOTAL_ELEMENTS_VO * sizeof(bf16),  hipMemcpyHostToDevice);
     
     // zero out d_o
-    // hipMemset(d_o, 0, TOTAL_ELEMENTS_VO * sizeof(bf16));
-    hipMemset(d_o, 0, TOTAL_ELEMENTS_QK_OUTPUT * sizeof(bf16));
+    hipMemset(d_o, 0, TOTAL_ELEMENTS_VO * sizeof(bf16));
 
     hipDeviceSynchronize();
     HipCheckError();
@@ -726,7 +859,7 @@ int main(int argc, char **argv) {
     );
 
     hipFuncSetAttribute(
-        (void*)qk_kernel,
+        (void*)qkv_kernel,
         hipFuncAttributeMaxDynamicSharedMemorySize,
         mem_size
     );
@@ -740,14 +873,13 @@ int main(int argc, char **argv) {
     float avg_us = 0;
     for(int i = 0; i < ITER; i++) {
         // zero out d_o
-        // hipMemset(d_o, 0, TOTAL_ELEMENTS_VO * sizeof(bf16));
-        hipMemset(d_o, 0, TOTAL_ELEMENTS_QK_OUTPUT * sizeof(bf16));
+        hipMemset(d_o, 0, TOTAL_ELEMENTS_VO * sizeof(bf16));
         hipDeviceSynchronize();
         HipCheckError();
 
         const auto start = std::chrono::high_resolution_clock::now();
         // lightning_attn2_kernel<<<g.grid(), g.block(), mem_size>>>(g, N);
-        qk_kernel<<<g.grid(), g.block(), mem_size>>>(g, N);
+        qkv_kernel<<<g.grid(), g.block(), mem_size>>>(g, N);
         hipDeviceSynchronize();
         const auto finish = std::chrono::high_resolution_clock::now();
         HipCheckError();
@@ -757,12 +889,10 @@ int main(int argc, char **argv) {
     std::cout << "Average execution time: " << avg_us << " us" << std::endl;
 
     // Copy results back and compare
-    // hipMemcpy(o_bf, d_o, TOTAL_ELEMENTS_VO * sizeof(bf16), hipMemcpyDeviceToHost);
-    hipMemcpy(o_bf, d_o, TOTAL_ELEMENTS_QK_OUTPUT * sizeof(bf16), hipMemcpyDeviceToHost);
+    hipMemcpy(o_bf, d_o, TOTAL_ELEMENTS_VO * sizeof(bf16), hipMemcpyDeviceToHost);
     
     // Convert output to float
-    // for(int i = 0; i < TOTAL_ELEMENTS_VO; i++) {
-    for(int i = 0; i < TOTAL_ELEMENTS_QK_OUTPUT; i++) {
+    for(int i = 0; i < TOTAL_ELEMENTS_VO; i++) {
         o[i] = __bfloat162float(o_bf[i]);
     }
 
@@ -772,8 +902,7 @@ int main(int argc, char **argv) {
     std::ofstream diff_file("printouts/diff.txt");
 
     float max_diff = 0, total_diff = 0, total_abs = 0;
-    // for(int i = 0; i < TOTAL_ELEMENTS_VO; i++) {
-    for(int i = 0; i < TOTAL_ELEMENTS_QK_OUTPUT; i++) {
+    for(int i = 0; i < TOTAL_ELEMENTS_VO; i++) {
         float diff = o[i] - o_ref[i];
         if (i < 8) {
             std::cout << "o[" << i << "] = " << o[i]

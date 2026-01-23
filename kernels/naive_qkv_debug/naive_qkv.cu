@@ -121,186 +121,186 @@ struct lightning_attn2_globals {
 };
 
 // __global__ __launch_bounds__(NUM_THREADS, 1)
-__global__ __launch_bounds__(NUM_THREADS, 2)
-void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
-{
-    extern __shared__ alignment_dummy __shm[];
-    shared_allocator al((int*)&__shm[0]);
+// __global__ __launch_bounds__(NUM_THREADS, 2)
+// void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
+// {
+//     extern __shared__ alignment_dummy __shm[];
+//     shared_allocator al((int*)&__shm[0]);
 
-    // smem
-    // using st_q_tile              = st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>;      // 64 x 128
-    // using st_k_tile              = st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>;      // 64 x 128
-    // using st_k_tile_split        = st_bf<CHUNK_SIZE, ATTN_F/2, st_32x32_s>;    // 64 x 64
-    // using st_v_tile              = st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>;      // 64 x 128
-    // using st_o_tile              = st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>;      // 64 x 128
-    // using st_kv_state_tile       = st_bf<ATTN_F,     ATTN_D, st_32x32_s>;      // 128 x 128
-    // st_q_tile (&q_smem)[2]       = al.allocate<st_q_tile, 2>(); // 64 x 128 x 2 x 2 = 32k
-    // st_k_tile (&k_smem)[2]       = al.allocate<st_k_tile, 2>();
-    // st_k_tile_split (&k_split_smem)[2][2] = al.allocate<st_k_tile_split, 2, 2>(); // for what?
-    // st_v_tile (&v_smem)[2]       = al.allocate<st_v_tile, 2>();
-    // // st_o_tile (&o_smem)[2]       = al.allocate<st_o_tile, 2>();
-    // st_kv_state_tile (&kv_state_smem) = al.allocate<st_kv_state_tile>();
-    st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&q_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();
-    st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&k_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();
-    st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s> (&v_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>, 2>();
-    st_bf<ATTN_F, ATTN_D, st_32x32_s> (&kv_state_smem) = al.allocate<st_bf<ATTN_F, ATTN_D, st_32x32_s>>();
+//     // smem
+//     // using st_q_tile              = st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>;      // 64 x 128
+//     // using st_k_tile              = st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>;      // 64 x 128
+//     // using st_k_tile_split        = st_bf<CHUNK_SIZE, ATTN_F/2, st_32x32_s>;    // 64 x 64
+//     // using st_v_tile              = st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>;      // 64 x 128
+//     // using st_o_tile              = st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>;      // 64 x 128
+//     // using st_kv_state_tile       = st_bf<ATTN_F,     ATTN_D, st_32x32_s>;      // 128 x 128
+//     // st_q_tile (&q_smem)[2]       = al.allocate<st_q_tile, 2>(); // 64 x 128 x 2 x 2 = 32k
+//     // st_k_tile (&k_smem)[2]       = al.allocate<st_k_tile, 2>();
+//     // st_k_tile_split (&k_split_smem)[2][2] = al.allocate<st_k_tile_split, 2, 2>(); // for what?
+//     // st_v_tile (&v_smem)[2]       = al.allocate<st_v_tile, 2>();
+//     // // st_o_tile (&o_smem)[2]       = al.allocate<st_o_tile, 2>();
+//     // st_kv_state_tile (&kv_state_smem) = al.allocate<st_kv_state_tile>();
+//     st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&q_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();
+//     st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s> (&k_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>, 2>();
+//     st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s> (&v_smem)[2] = al.allocate<st_bf<CHUNK_SIZE, ATTN_D, st_32x32_s>, 2>();
+//     st_bf<ATTN_F, ATTN_D, st_32x32_s> (&kv_state_smem) = al.allocate<st_bf<ATTN_F, ATTN_D, st_32x32_s>>();
 
-    // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&q_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
-    // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&k_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
+//     // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&q_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
+//     // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&k_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
 
-    const int head_idx = blockIdx.x;
-    const int batch_idx = blockIdx.y;
-    // printf("head_idx %d batch_idx %d\n", head_idx, batch_idx);
-    // float slope = globals.slopes[head_idx];
-    float slope = reinterpret_cast<float*>(globals.slopes)[head_idx];
+//     const int head_idx = blockIdx.x;
+//     const int batch_idx = blockIdx.y;
+//     // printf("head_idx %d batch_idx %d\n", head_idx, batch_idx);
+//     // float slope = globals.slopes[head_idx];
+//     float slope = reinterpret_cast<float*>(globals.slopes)[head_idx];
 
-    /********** Readfirstlane hoisting **********/
-    // Create base buffer resources once
-    const bf16* q_base = (bf16*)&globals.Qg[{batch_idx, 0, head_idx, 0}]; // For amd, BNHD
-    const bf16* k_base = (bf16*)&globals.Kg[{batch_idx, 0, head_idx, 0}];
-    const bf16* v_base = (bf16*)&globals.Vg[{batch_idx, 0, head_idx, 0}];
-    const int q_row_stride = globals.Qg.template stride<1>() * sizeof(bf16);
-    const int k_row_stride = globals.Kg.template stride<1>() * sizeof(bf16);
-    const int v_row_stride = globals.Vg.template stride<1>() * sizeof(bf16);
-    i32x4 q_srsrc_base = make_srsrc(q_base, q_row_stride * ATTN_N, q_row_stride);
-    i32x4 k_srsrc_base = make_srsrc(k_base, k_row_stride * ATTN_N, k_row_stride);
-    i32x4 v_srsrc_base = make_srsrc(v_base, v_row_stride * ATTN_N, v_row_stride);
+//     /********** Readfirstlane hoisting **********/
+//     // Create base buffer resources once
+//     const bf16* q_base = (bf16*)&globals.Qg[{batch_idx, 0, head_idx, 0}]; // For amd, BNHD
+//     const bf16* k_base = (bf16*)&globals.Kg[{batch_idx, 0, head_idx, 0}];
+//     const bf16* v_base = (bf16*)&globals.Vg[{batch_idx, 0, head_idx, 0}];
+//     const int q_row_stride = globals.Qg.template stride<1>() * sizeof(bf16);
+//     const int k_row_stride = globals.Kg.template stride<1>() * sizeof(bf16);
+//     const int v_row_stride = globals.Vg.template stride<1>() * sizeof(bf16);
+//     i32x4 q_srsrc_base = make_srsrc(q_base, q_row_stride * ATTN_N, q_row_stride);
+//     i32x4 k_srsrc_base = make_srsrc(k_base, k_row_stride * ATTN_N, k_row_stride);
+//     i32x4 v_srsrc_base = make_srsrc(v_base, v_row_stride * ATTN_N, v_row_stride);
 
-    const int wid = warpid() % NUM_WARPS;
-    constexpr int elem_per_warp = (16 / sizeof(bf16)) * kittens::WARP_THREADS;
-    uint32_t q_lds_base_0 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(&q_smem[0].data[0]) + wid * elem_per_warp * sizeof(bf16)
-    ));
-    uint32_t k_lds_base_0 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(&k_smem[0].data[0]) + wid * elem_per_warp * sizeof(bf16)
-    ));
-    uint32_t v_lds_base_0 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(&v_smem[0].data[0]) + wid * elem_per_warp * sizeof(bf16)
-    ));
-    uint32_t q_lds_base_1 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(&k_smem[1].data[0]) + wid * elem_per_warp * sizeof(bf16)
-    ));
-    uint32_t k_lds_base_1 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(&k_smem[1].data[0]) + wid * elem_per_warp * sizeof(bf16)
-    ));
-    uint32_t v_lds_base_1 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(&v_smem[1].data[0]) + wid * elem_per_warp * sizeof(bf16)
-    ));
+//     const int wid = warpid() % NUM_WARPS;
+//     constexpr int elem_per_warp = (16 / sizeof(bf16)) * kittens::WARP_THREADS;
+//     uint32_t q_lds_base_0 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
+//         reinterpret_cast<uintptr_t>(&q_smem[0].data[0]) + wid * elem_per_warp * sizeof(bf16)
+//     ));
+//     uint32_t k_lds_base_0 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
+//         reinterpret_cast<uintptr_t>(&k_smem[0].data[0]) + wid * elem_per_warp * sizeof(bf16)
+//     ));
+//     uint32_t v_lds_base_0 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
+//         reinterpret_cast<uintptr_t>(&v_smem[0].data[0]) + wid * elem_per_warp * sizeof(bf16)
+//     ));
+//     uint32_t q_lds_base_1 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
+//         reinterpret_cast<uintptr_t>(&k_smem[1].data[0]) + wid * elem_per_warp * sizeof(bf16)
+//     ));
+//     uint32_t k_lds_base_1 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
+//         reinterpret_cast<uintptr_t>(&k_smem[1].data[0]) + wid * elem_per_warp * sizeof(bf16)
+//     ));
+//     uint32_t v_lds_base_1 = __builtin_amdgcn_readfirstlane(static_cast<uint32_t>(
+//         reinterpret_cast<uintptr_t>(&v_smem[1].data[0]) + wid * elem_per_warp * sizeof(bf16)
+//     ));
 
-    int blocks = N / CHUNK_SIZE;
+//     int blocks = N / CHUNK_SIZE;
 
-    int tic = 0, toc = 1;
+//     int tic = 0, toc = 1;
 
-    // Initialize all of the register tiles.
-    q_tile<ATTN_F, bf16> q_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
-    q_tile_transposed<ATTN_F, bf16> q_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
-    k_tile<ATTN_F, bf16> k_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
-    k_tile_transposed<ATTN_F, bf16> k_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
+//     // Initialize all of the register tiles.
+//     q_tile<ATTN_F, bf16> q_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
+//     q_tile_transposed<ATTN_F, bf16> q_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
+//     k_tile<ATTN_F, bf16> k_reg;                         // [CHUNK_SIZE, ATTN_F], 64x128
+//     k_tile_transposed<ATTN_F, bf16> k_reg_transposed;   // [ATTN_F, CHUNK_SIZE], 128x64
     
-    v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
-    o_tile_transposed<ATTN_D, float, col_l, rt_32x32_s> o_reg;          // [ATTN_D, CHUNK_SIZE], 128x64
-    attn_tile<ATTN_D, float, col_l, rt_32x32_s> attn_block[2];          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16;         // [CHUNK_SIZE, CHUNK_SIZE], 64x64
-    attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> attn_block_bf16_in;    // [64x64], 内部16x32 为了适配mma_AtB api
+//     v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> v_reg;                    // [CHUNK_SIZE, ATTN_D], 64x128
+//     o_tile_transposed<ATTN_D, float, col_l, rt_32x32_s> o_reg;          // [ATTN_D, CHUNK_SIZE], 128x64
+//     attn_tile<ATTN_D, float, col_l, rt_32x32_s> attn_block[2];          // [CHUNK_SIZE, CHUNK_SIZE], 64x64
+//     attn_tile<ATTN_D, bf16, col_l, rt_32x32_s> attn_block_bf16;         // [CHUNK_SIZE, CHUNK_SIZE], 64x64
+//     attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s> attn_block_bf16_in;    // [64x64], 内部16x32 为了适配mma_AtB api
 
-    zero(o_reg);
+//     zero(o_reg);
 
-    // using T = typename q_tile<ATTN_F, bf16>::dtype; // 32x16
+//     // using T = typename q_tile<ATTN_F, bf16>::dtype; // 32x16
     
-    // using st_q_tile              = st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>;      // 64 x 128
-    // using T = st_q_tile::dtype;
-    using T = typename st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>::dtype;
-    constexpr int bytes_per_thread = st_32x32_s::template bytes_per_thread<T>();
-    constexpr int bytes_per_memcpy = bytes_per_thread * NUM_THREADS;
-    constexpr int memcpy_per_tile_q_k = CHUNK_SIZE * ATTN_F * sizeof(T) / bytes_per_memcpy;
-    constexpr int memcpy_per_tile_v = CHUNK_SIZE * ATTN_D * sizeof(T) / bytes_per_memcpy;
-    uint32_t swizzled_offsets_Q[memcpy_per_tile_q_k];
-    uint32_t swizzled_offsets_V[memcpy_per_tile_v];
-    uint32_t swizzled_offsets_K[memcpy_per_tile_q_k];
-    G::prefill_swizzled_offsets<1, false>(q_smem[0], globals.Qg, swizzled_offsets_Q);
-    G::prefill_swizzled_offsets<1, false>(k_smem[0], globals.Kg, swizzled_offsets_K);
-    G::prefill_swizzled_offsets<1, false>(v_smem[0], globals.Vg, swizzled_offsets_V);
+//     // using st_q_tile              = st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>;      // 64 x 128
+//     // using T = st_q_tile::dtype;
+//     using T = typename st_bf<CHUNK_SIZE, ATTN_F, st_32x32_s>::dtype;
+//     constexpr int bytes_per_thread = st_32x32_s::template bytes_per_thread<T>();
+//     constexpr int bytes_per_memcpy = bytes_per_thread * NUM_THREADS;
+//     constexpr int memcpy_per_tile_q_k = CHUNK_SIZE * ATTN_F * sizeof(T) / bytes_per_memcpy;
+//     constexpr int memcpy_per_tile_v = CHUNK_SIZE * ATTN_D * sizeof(T) / bytes_per_memcpy;
+//     uint32_t swizzled_offsets_Q[memcpy_per_tile_q_k];
+//     uint32_t swizzled_offsets_V[memcpy_per_tile_v];
+//     uint32_t swizzled_offsets_K[memcpy_per_tile_q_k];
+//     G::prefill_swizzled_offsets<1, false>(q_smem[0], globals.Qg, swizzled_offsets_Q);
+//     G::prefill_swizzled_offsets<1, false>(k_smem[0], globals.Kg, swizzled_offsets_K);
+//     G::prefill_swizzled_offsets<1, false>(v_smem[0], globals.Vg, swizzled_offsets_V);
 
 
-    for (int block = 0; block < blocks; block++) {
-        // // Load Q, K, V tiles from global memory to shared memory
-        // G::load(q_smem[tic], globals.Qg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_Q);
-        G::load(q_smem[tic], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q);
-        // G::load<1, false>(q_smem[tic], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q);
-        // G::load(q_smem[tic], globals.Qg, {batch_idx, 0, head_idx, 0}, swizzled_offsets_Q);
-        // G::load<1, false>(q_smem[tic], globals.Qg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_Q);
-        // G::load<1, false>(q_smem[0], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q, q_srsrc_base, q_base, q_lds_base_0);
+//     for (int block = 0; block < blocks; block++) {
+//         // // Load Q, K, V tiles from global memory to shared memory
+//         // G::load(q_smem[tic], globals.Qg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_Q);
+//         G::load(q_smem[tic], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q);
+//         // G::load<1, false>(q_smem[tic], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q);
+//         // G::load(q_smem[tic], globals.Qg, {batch_idx, 0, head_idx, 0}, swizzled_offsets_Q);
+//         // G::load<1, false>(q_smem[tic], globals.Qg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_Q);
+//         // G::load<1, false>(q_smem[0], globals.Qg, {batch_idx, block, head_idx, 0}, swizzled_offsets_Q, q_srsrc_base, q_base, q_lds_base_0);
    
 
-        // G::load(k_smem[tic], globals.Kg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_K);
-        // G::load(v_smem[tic], globals.Vg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_V);
-        G::load(k_smem[tic], globals.Kg, {batch_idx, block, head_idx, 0}, swizzled_offsets_K);
-        G::load(v_smem[tic], globals.Vg, {batch_idx, block, head_idx, 0}, swizzled_offsets_V);
+//         // G::load(k_smem[tic], globals.Kg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_K);
+//         // G::load(v_smem[tic], globals.Vg, {batch_idx, block*CHUNK_SIZE, head_idx, 0}, swizzled_offsets_V);
+//         G::load(k_smem[tic], globals.Kg, {batch_idx, block, head_idx, 0}, swizzled_offsets_K);
+//         G::load(v_smem[tic], globals.Vg, {batch_idx, block, head_idx, 0}, swizzled_offsets_V);
 
-        // Below 3 loads work...
-        // load<1, q_tile<ATTN_F, bf16>, _gl_QKVO>(q_reg, globals.Qg, {batch_idx, block, head_idx, 0});
-        // load<1, k_tile<ATTN_F, bf16>, _gl_QKVO>(k_reg, globals.Kg, {batch_idx, block, head_idx, 0});
-        // load<1, v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s>, _gl_QKVO>(v_reg, globals.Vg, {batch_idx, block, head_idx, 0});        
+//         // Below 3 loads work...
+//         // load<1, q_tile<ATTN_F, bf16>, _gl_QKVO>(q_reg, globals.Qg, {batch_idx, block, head_idx, 0});
+//         // load<1, k_tile<ATTN_F, bf16>, _gl_QKVO>(k_reg, globals.Kg, {batch_idx, block, head_idx, 0});
+//         // load<1, v_tile<ATTN_D, bf16, col_l, rt_16x32_4_s>, _gl_QKVO>(v_reg, globals.Vg, {batch_idx, block, head_idx, 0});        
 
-        __builtin_amdgcn_s_waitcnt(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
+//         __builtin_amdgcn_s_waitcnt(0);
+//         __builtin_amdgcn_sched_barrier(0);
+//         __builtin_amdgcn_s_barrier();
 
-        // smem to reg
-        load(q_reg, q_smem[tic]);
-        load(k_reg, k_smem[tic]);
-        load(v_reg, v_smem[tic]);
-        __builtin_amdgcn_sched_barrier(0);
-        asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(0)");
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
+//         // smem to reg
+//         load(q_reg, q_smem[tic]);
+//         load(k_reg, k_smem[tic]);
+//         load(v_reg, v_smem[tic]);
+//         __builtin_amdgcn_sched_barrier(0);
+//         asm volatile("s_waitcnt lgkmcnt(0)");
+//         asm volatile("s_waitcnt vmcnt(0)");
+//         __builtin_amdgcn_sched_barrier(0);
+//         __builtin_amdgcn_s_barrier();
 
-        // calculation QK
-        zero(attn_block[tic]);
-        transpose(q_reg_transposed, q_reg);
-        transpose(k_reg_transposed, k_reg);
-        mma_AtB(attn_block[0], k_reg_transposed, q_reg_transposed, attn_block[0]);
+//         // calculation QK
+//         zero(attn_block[tic]);
+//         transpose(q_reg_transposed, q_reg);
+//         transpose(k_reg_transposed, k_reg);
+//         mma_AtB(attn_block[0], k_reg_transposed, q_reg_transposed, attn_block[0]);
 
-        __builtin_amdgcn_sched_barrier(0);
+//         __builtin_amdgcn_sched_barrier(0);
 
-        // apply diag decay
-        // TODO
+//         // apply diag decay
+//         // TODO
 
-        // how to copy 64x64 fp32 attn_block to 64x64 bf16 attn_block_bf16?
-        // TODO
-        // attn_block_bf16 [CHUNK_SIZE, CHUNK_SIZE], 64x64
-        copy(subtile_inplace<32>(attn_block_bf16, 0), subtile_inplace<32>(attn_block[0], 0));
-        copy(subtile_inplace<32>(attn_block_bf16, 1), subtile_inplace<32>(attn_block[0], 1));
-        attn_block_bf16_in = *reinterpret_cast<attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s>*>(&attn_block_bf16);
-        asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(0)");
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
+//         // how to copy 64x64 fp32 attn_block to 64x64 bf16 attn_block_bf16?
+//         // TODO
+//         // attn_block_bf16 [CHUNK_SIZE, CHUNK_SIZE], 64x64
+//         copy(subtile_inplace<32>(attn_block_bf16, 0), subtile_inplace<32>(attn_block[0], 0));
+//         copy(subtile_inplace<32>(attn_block_bf16, 1), subtile_inplace<32>(attn_block[0], 1));
+//         attn_block_bf16_in = *reinterpret_cast<attn_tile<ATTN_D, bf16, col_l, rt_16x32_4_s>*>(&attn_block_bf16);
+//         asm volatile("s_waitcnt lgkmcnt(0)");
+//         asm volatile("s_waitcnt vmcnt(0)");
+//         __builtin_amdgcn_sched_barrier(0);
+//         __builtin_amdgcn_s_barrier();
+//         __builtin_amdgcn_sched_barrier(0);
 
-        // calculate AV
-        // v_reg [CHUNK_SIZE, ATTN_D], 64x128
-        // o_reg [ATTN_D, CHUNK_SIZE], 128x64
-        // v_reg * attn_block_bf16 -> o_reg, 64x128^T * 64x64 = 128x64, 这里的块太大了
-        mma_AtB(o_reg, v_reg, attn_block_bf16_in, o_reg); // 这个api对B的shape有要求?确定？，16x32
+//         // calculate AV
+//         // v_reg [CHUNK_SIZE, ATTN_D], 64x128
+//         // o_reg [ATTN_D, CHUNK_SIZE], 128x64
+//         // v_reg * attn_block_bf16 -> o_reg, 64x128^T * 64x64 = 128x64, 这里的块太大了
+//         mma_AtB(o_reg, v_reg, attn_block_bf16_in, o_reg); // 这个api对B的shape有要求?确定？，16x32
 
-        __builtin_amdgcn_s_setprio(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
+//         __builtin_amdgcn_s_setprio(0);
+//         __builtin_amdgcn_sched_barrier(0);
+//         __builtin_amdgcn_s_barrier();
+//         __builtin_amdgcn_sched_barrier(0);
 
 
         
         
-        // Swap tiles
-        // std::swap(tic, toc);
-    }
+//         // Swap tiles
+//         // std::swap(tic, toc);
+//     }
 
-    o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed;
-    transpose(o_reg_transposed, o_reg);
-    store<1>(globals.Og, o_reg_transposed, {batch_idx, 0, head_idx, 0});
-}
+//     o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed;
+//     transpose(o_reg_transposed, o_reg);
+//     store<1>(globals.Og, o_reg_transposed, {batch_idx, 0, head_idx, 0});
+// }
 
 __global__ __launch_bounds__(NUM_THREADS, 2)
 void qkv_kernel(const lightning_attn2_globals globals, int N)
@@ -844,7 +844,7 @@ int main(int argc, char **argv) {
     );
 
     hipFuncSetAttribute(
-        (void*)lightning_attn2_kernel,
+        (void*)qkv_kernel,
         hipFuncAttributeMaxDynamicSharedMemorySize,
         mem_size
     );

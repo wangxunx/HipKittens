@@ -21,12 +21,18 @@ CXXFLAGS ?= -Wall -Wextra
 CXXFLAGS := -w
 ICXXFLAGS += $(CXXFLAGS) 
 
-TARGETS=naive_qkv naive_qk
+TARGETS=naive_qkv2 naive_qkv naive_qk
+SRC_naive_qkv2=naive_qkv2.cu
 SRC_naive_qkv=naive_qkv.cu
 SRC_naive_qk=naive_qk.cu
 BUILD_DIR=build
 
 all: $(TARGETS)
+
+naive_qkv2: $(SRC_naive_qkv2)
+	mkdir -p $(BUILD_DIR)
+	$(HIPCXX) $(HIPFLAGS) $(ICXXFLAGS) -c $< -o $(BUILD_DIR)/$@.o
+	$(HIPCXX) $(HIPFLAGS) $(BUILD_DIR)/$@.o -o $@
 
 naive_qkv: $(SRC_naive_qkv)
 	mkdir -p $(BUILD_DIR)
