@@ -23,7 +23,8 @@ ICXXFLAGS += $(CXXFLAGS)
 
 TARGET=lightning_attn2
 # SRC=lightning_attn2.cu
-SRC=lightning_attn2_v_split.cu
+# SRC=lightning_attn2_v_split.cu
+SRC=lightning_attn2_v_split_full_fp16.cu
 BUILD_DIR=build
 
 $(TARGET): $(SRC)

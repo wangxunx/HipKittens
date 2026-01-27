@@ -7,6 +7,7 @@ import numpy as np
 # from baselines.lightning_attn2 import lightning_attn2
 from baselines.lightning_attn2_dump import lightning_attn2
 from baselines.lightning_attn2_naive import lightning_attn2_naive
+from baselines.lightning_attn2_naive_fp16 import lightning_attn2_naive_fp16
 
 D_QK = 128
 D_VO = 128
@@ -140,6 +141,7 @@ def main():
         pdb.set_trace()
         triton_out, triton_debug_out, kv0_debug, kv1_debug = lightning_attn2(q, k, v, s)
         triton_out_naive, triton_debug_out_naive, kv0_naive, kv1_naive = lightning_attn2_naive(q, k, v, s)
+        triton_out_naive_fp16, triton_debug_out_naive_fp16, kv0_naive_fp16, kv1_naive_fp16 = lightning_attn2_naive(q, k, v, s)
         print(f"kv0_naive: {kv0_naive}")
         print(f"kv1_naive: {kv1_naive}")
         print(f"kv0_debug: {kv0_debug}")
@@ -150,8 +152,11 @@ def main():
         pdb.set_trace()
         assert torch.allclose(triton_out, triton_out_naive, atol=1e-3, rtol=1e-3)
         assert torch.allclose(triton_debug_out, triton_debug_out_naive, atol=1e-3, rtol=1e-3)
+        assert torch.allclose(triton_debug_out, triton_debug_out_naive_fp16, atol=1e-3, rtol=1e-3)
         assert torch.allclose(kv0_debug, kv0_naive, atol=1e-5, rtol=1e-5)
         assert torch.allclose(kv1_debug, kv1_naive, atol=1e-5, rtol=1e-5)
+        assert torch.allclose(kv0_debug, kv0_naive_fp16, atol=1e-5, rtol=1e-5)
+        assert torch.allclose(kv1_debug, kv1_naive_fp16, atol=1e-5, rtol=1e-5)
         
         avg_mag_pytorch = torch.mean(torch.abs(pytorch_out)).item()
         # avg_mag_triton = torch.mean(torch.abs(triton_out)).item()
