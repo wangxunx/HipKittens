@@ -665,23 +665,23 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // rt_fl<CHUNK_SIZE, ATTN_F/2> local_k_1;
 
         rt_fl<ATTN_F, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv;        // 128x32
-        rt_fl<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128
-        rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k_bf16;      // 64x128
+        rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128
+        // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k_bf16;      // 64x128
         // rt_bf<ATTN_F, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv;        // 128x32
         // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128
         // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k_bf16;      // 64x128
 
         load(local_k, k_smem[0]);
-        col_vec<rt_fl<CHUNK_SIZE, ATTN_D, col_l, rt_32x32_s>> k_decay_rv;
+        col_vec<rt_bf<CHUNK_SIZE, ATTN_D, col_l, rt_32x32_s>> k_decay_rv;
         load(k_decay_rv, k_decay);
         mul_row(local_k, local_k, k_decay_rv);
-        // mul_row(k_reg, k_reg, k_decay_rv);
-        copy(local_k_bf16, local_k);
+        // copy(local_k_bf16, local_k);
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
         float block_decay = __expf(-slope * static_cast<float>(CHUNK_SIZE));
+        // bf16 block_decay = __float2bfloat16(__expf(-slope * static_cast<float>(CHUNK_SIZE)));
 
         load(local_kv, kv_state_smem);
 #ifdef DEBUG
@@ -707,7 +707,8 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // A: k_reg [CHUNK_SIZE, ATTN_F], 64x128, bf16
         // A: local_k_bf16, [CHUNK_SIZE, ATTN_F], 64x128, bf16
         // B: [CHUNK_SIZE, ATTN_D], 64x128
-        mma_AtB(local_kv, local_k_bf16, v_reg, local_kv);
+        // mma_AtB(local_kv, local_k_bf16, v_reg, local_kv);
+        mma_AtB(local_kv, local_k, v_reg, local_kv);
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
