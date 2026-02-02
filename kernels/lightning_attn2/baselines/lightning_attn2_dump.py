@@ -39,8 +39,8 @@ def _fwd_kernel(
     K_trans_block_ptr = K + qk_offset + tl.arange(0, d)[:, None]
     V_block_ptr = V + v_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :]
     O_block_ptr = Out + o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :]
-    O_debug_block_ptr = Out_debug + o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] # debug dump
     S_block_ptr = S + off_h
+    O_debug_block_ptr = Out_debug + o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] # debug dump
 
     ##### init diag decay(Lambda); q, k decay; kv
     s = tl.load(S_block_ptr)
@@ -56,64 +56,13 @@ def _fwd_kernel(
     s_index = s * index
     s_index = tl.where(index >= 0, -s_index, float("-inf"))
     diag_decay = tl.exp(s_index)    # 64x64
-
-    # debug o_inter index
-    # if off_e == 0:
-    #     print(f"off_e {off_e}")
-    #     print(f"o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] {o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :]}")
-    #     print(o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] + off_block[:, None] * e)
-    #     import pdb
-    #     pdb.set_trace()
-    # if off_e == 1:
-    #     print(f"off_e {off_e}")
-    #     print(f"o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] {o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :]}")
-    #     print(o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] + off_block[:, None] * e)
-    #     import pdb
-    #     pdb.set_trace()
-    # if off_e == 2:
-    #     print(f"off_e {off_e}")
-    #     print(f"o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] {o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :]}")
-    #     print(o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] + off_block[:, None] * e)
-    #     import pdb
-    #     pdb.set_trace()
-    # if off_e == 3:
-    #     print(f"off_e {off_e}")
-    #     print(f"o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] {o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :]}")
-    #     print(o_offset + e_offset + tl.arange(0, BLOCK_MODEL)[None, :] + off_block[:, None] * e)
-    #     import pdb
-    #     pdb.set_trace()
     
+
     # kv = tl.zeros([d, BLOCK_MODEL], dtype=tl.float32) # 128x32
     kv = tl.full([d, BLOCK_MODEL], value=1.0, dtype=tl.float32)
 
     # ---- kv debug ptr ----
     num_e_blocks = e // BLOCK_MODEL
-    # kv0_ptr = (
-    #     kv0_debug
-    #     + off_bh * num_e_blocks * d * BLOCK_MODEL
-    #     + off_e * d * BLOCK_MODEL
-    #     + tl.arange(0, d)[:, None] * BLOCK_MODEL
-    #     + tl.arange(0, BLOCK_MODEL)[None, :]
-    # )
-    # kv1_ptr = (
-    #     kv1_debug
-    #     + off_bh * num_e_blocks * d * BLOCK_MODEL
-    #     + off_e * d * BLOCK_MODEL
-    #     + tl.arange(0, d)[:, None] * BLOCK_MODEL
-    #     + tl.arange(0, BLOCK_MODEL)[None, :]
-    # )
-    # if off_e == 0:
-    #     print(f"off_e {off_e}")
-    #     print(f"off_bh * num_e_blocks * d * BLOCK_MODEL + off_e * d * BLOCK_MODEL {off_bh * num_e_blocks * d * BLOCK_MODEL + off_e * d * BLOCK_MODEL}")
-    #     print(tl.arange(0, d)[:, None] * BLOCK_MODEL + tl.arange(0, BLOCK_MODEL)[None, :])
-    #     import pdb
-    #     pdb.set_trace()
-    # if off_e == 1:
-    #     print(f"off_e {off_e}")
-    #     print(f"off_bh * num_e_blocks * d * BLOCK_MODEL + off_e * d * BLOCK_MODEL {off_bh * num_e_blocks * d * BLOCK_MODEL + off_e * d * BLOCK_MODEL}")
-    #     print(tl.arange(0, d)[:, None] * BLOCK_MODEL + tl.arange(0, BLOCK_MODEL)[None, :])
-    #     import pdb
-    #     pdb.set_trace()
 
     kv0_ptr = (
         kv0_debug
@@ -129,18 +78,6 @@ def _fwd_kernel(
         + tl.arange(0, d)[:, None] * e           # d 维度的 stride
         + tl.arange(0, BLOCK_MODEL)[None, :]     # e 维度内的偏移
     )
-    # if off_e == 0:
-    #     print(f"off_e {off_e}")
-    #     print(f"off_bh * d * e + off_e * BLOCK_MODEL {off_bh * d * e + off_e * BLOCK_MODEL}")
-    #     print(tl.arange(0, d)[:, None] * e + tl.arange(0, BLOCK_MODEL)[None, :])
-    #     import pdb
-    #     pdb.set_trace()
-    # if off_e == 1:
-    #     print(f"off_e {off_e}")
-    #     print(f"off_bh * d * e + off_e * BLOCK_MODEL {off_bh * d * e + off_e * BLOCK_MODEL}")
-    #     print(tl.arange(0, d)[:, None] * e + tl.arange(0, BLOCK_MODEL)[None, :])
-    #     import pdb
-    #     pdb.set_trace()
 
     ##### compute
     for i in range(NUM_BLOCK):
@@ -162,9 +99,8 @@ def _fwd_kernel(
         o_intra = tl.dot(qk, v)                # qk 64x64, v 64x32 -> o_intra 64x32
         o_inter = tl.dot(q, kv) * q_decay      # q 64x128, kv 128x32 -> 64x32, q_decay 64x1
         o_inter_raw = tl.dot(q, kv)
+        # o_intra_raw = tl.dot(tl.dot(q, k_trans), v)
         o = o_intra + o_inter
-        # for debug
-        # o = o_intra
 
         # save and update
         tl.store(
@@ -239,7 +175,6 @@ def _fwd_kernel_naive(
     diag_decay = tl.exp(s_index)    # 64x64
     
     # kv = tl.zeros([d, BLOCK_MODEL], dtype=tl.float32) # 128x32
-    # kv = tl.ones([d, BLOCK_MODEL], dtype=tl.float32) # 128x32
     kv = tl.full([d, BLOCK_MODEL], value=1.0, dtype=tl.float32)
     # import pdb
     # pdb.set_trace()
@@ -282,8 +217,6 @@ def _fwd_kernel_naive(
         )
 
         kv = block_decay * kv + tl.dot(k_trans * k_trans_decay, v)
-        # import pdb
-        # pdb.set_trace()
         off_block += BLOCK
 
 
@@ -714,4 +647,4 @@ class LightningAttention2(torch.autograd.Function):
         return dq, dk, dv, None, None
 
 
-lightning_attn2 = LightningAttention2.apply
+lightning_attn2_dump = LightningAttention2.apply

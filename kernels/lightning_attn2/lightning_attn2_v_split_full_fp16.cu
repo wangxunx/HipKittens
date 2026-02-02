@@ -4,51 +4,55 @@
 #include <chrono>
 #include <cmath>
 
-#define DEBUG
+// #define DEBUG
 
 #define NUM_WARPS 8
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
-// #ifndef ATTN_B
-// constexpr int ATTN_B = 16; // batch size
-// #endif
-
-// #ifndef ATTN_H
-// constexpr int ATTN_H = 8;  // number of heads
-// #endif
-
-// #ifndef ATTN_D
-// constexpr int ATTN_D = 128; // dimension
-// #endif
-
-// #ifndef ATTN_F
-// constexpr int ATTN_F = 128;  // number of features
-// #endif
-
-// #ifndef ATTN_N
-// constexpr int ATTN_N = 1024; // sequence length
-// #endif
-
-// constexpr int CHUNK_SIZE = 64;
-
-// debug
 #ifndef ATTN_B
-constexpr int ATTN_B = 1;//16; // batch size
+constexpr int ATTN_B = 16; // batch size
 #endif
+
 #ifndef ATTN_H
-constexpr int ATTN_H = 1;  // number of heads
+constexpr int ATTN_H = 8;  // number of heads
 #endif
+
 #ifndef ATTN_D
 constexpr int ATTN_D = 128; // dimension
 #endif
+
 #ifndef ATTN_F
 constexpr int ATTN_F = 128;  // number of features
 #endif
+
 #ifndef ATTN_N
-constexpr int ATTN_N = 64;//1024; // sequence length
+constexpr int ATTN_N = 1024; // sequence length
 #endif
+
 constexpr int CHUNK_SIZE = 64;
+
+// debug
+// #ifndef ATTN_B
+// constexpr int ATTN_B = 4;//;//16; // batch size
+// #endif
+// #ifndef ATTN_H
+// constexpr int ATTN_H = 8;  // number of heads
+// #endif
+// #ifndef ATTN_D
+// constexpr int ATTN_D = 128; // dimension
+// #endif
+// #ifndef ATTN_F
+// constexpr int ATTN_F = 128;  // number of features
+// #endif
+// #ifndef ATTN_N
+// constexpr int ATTN_N = 1024;//128;//64;//1024; // sequence length
+// #endif
+// constexpr int CHUNK_SIZE = 64;
+
+
 constexpr int V_CHUNK_SIZE = 32;
+
+constexpr int CHUNK_SIZE_SPLIT = 2;
 
 using namespace kittens;
 
@@ -62,6 +66,132 @@ using G = kittens::group<NUM_WARPS>;
     __syncthreads(); \
 }
 
+__device__ bool threadblock0() {
+    return blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+__device__ bool thread0() {
+    return threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+__device__ bool thread1() {
+    return threadIdx.x == 1 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+__device__ bool thread2() {
+    return threadIdx.x == 2 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+__device__ bool thread32() {
+    return threadIdx.x == 32 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+__device__ bool thread33() {
+    return threadIdx.x == 33 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+__device__ bool thread63() {
+    return threadIdx.x == 63 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+__device__ bool thread(int tid) {
+    return threadIdx.x == tid && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0;
+}
+
+#define D(x) do { if(thread0())printf("%d,  " #x ": %lf\n",  __LINE__, static_cast<float>(x)); } while (0)
+#define Dk(x) do { if(thread0())printf("%d, K:%d " #x ": %lf\n",  __LINE__, k, static_cast<float>(x)); } while (0)
+//  #define D(x) 
+//  #define Dk(x) 
+#define Dk2(x) do { if(thread0())printf("%d, K:%d " #x ": %lf\n",  __LINE__, k, static_cast<float>(x)); } while (0)
+
+#define PT(xx) \
+    if(thread0()) \
+        for(int i = 0; i < xx.height; i++) \
+            for(int j = 0; j < xx.width; j++) \
+                for(int k = 0; k < xx.packed_per_base_tile; k++) {\
+                    printf("%d, " #xx ".[%d][%d].data[%d] %lf\n",  __LINE__,i,j,k, float(xx.tiles[i][j].data[k].x)); \
+                    printf("%d, " #xx ".[%d][%d].data[%d] %lf\n",  __LINE__,i,j,k, float(xx.tiles[i][j].data[k].y)); \
+                }\
+
+// template<typename D>
+// __device__ float sum_tile(D A2_tile){ 
+//     float sum_val_A = 0;
+//     #pragma unroll
+//     for(int i = 0; i < A2_tile.height; i++){
+//         #pragma unroll
+//         for(int j = 0; j < A2_tile.width; j++){
+//             // for(int k = 0)
+//             #pragma unroll
+//             for(int k = 0; k < A2_tile.packed_per_base_tile; k++){
+//                 sum_val_A += A2_tile.tiles[i][j].data[k].x;
+//                 // sum_val_A += A2_tile.tiles[i][j].data[k].y;
+//             }
+//         }
+//     }
+
+//     return sum_val_A;
+
+// }
+
+template<typename T, typename D>
+__device__ T sum_tile(const D& A2_tile){ 
+    T sum_val_A = T(0);
+
+    #pragma unroll
+    for(int i = 0; i < D::height; i++){
+        #pragma unroll
+        for(int j = 0; j < D::width; j++){
+            #pragma unroll
+            for(int k = 0; k < D::packed_per_base_tile; k++){
+                sum_val_A += static_cast<T>(A2_tile.tiles[i][j].data[k].x);
+                sum_val_A += static_cast<T>(A2_tile.tiles[i][j].data[k].y);
+            }
+        }
+    }
+    return sum_val_A;
+}
+
+template<typename T, typename D>
+__device__ T sum_rv(const D& vec){ 
+    T sum_val_A = T(0);
+
+    #pragma unroll
+    for(int i = 0; i < D::outer_dim; i++){
+        #pragma unroll
+        for(int j = 0; j < D::inner_dim; j++){
+            // #pragma unroll
+            // for(int k = 0; k < D::packed_per_base_tile; k++){
+            //     sum_val_A += static_cast<T>(vec.tiles[i][j].data[k].x);
+            //     sum_val_A += static_cast<T>(vec.tiles[i][j].data[k].y);
+            // }
+            printf("%d, data[%d][%d].x %lf\n",  __LINE__,i,j, float(vec.data[i][j].x));
+            printf("%d, data[%d][%d].y %lf\n",  __LINE__,i,j, float(vec.data[i][j].y));
+            sum_val_A += static_cast<T>(vec.data[i][j].x);
+            sum_val_A += static_cast<T>(vec.data[i][j].y);
+        }
+    }
+    return sum_val_A;
+}
+
+template <int row=16, int col=16, int stride=col, typename T>
+__device__ void print_smem(const T *ptr){
+    if(threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0) { 
+        for(int i = 0; i < row; i ++) {
+            if(i % 8 == 0 && i != 0) {
+                printf("\n");
+            }
+            for(int j = 0; j < col; j++) {
+                if(j % 8 == 0 && j != 0) {
+                    printf("  ");
+                }
+                
+                float now = float(ptr[i*stride+j]);
+                printf("%7.4lf ",  now);
+            }
+            printf("\n");
+        }
+    }
+}
+
 #define DUMP_KV_STATE_SUM(MSG) {                                      \
     if (threadIdx.x == 0 && threadIdx.y == 0) {                       \
         float kv_state_sum = 0.0f;                                    \
@@ -72,14 +202,6 @@ using G = kittens::group<NUM_WARPS>;
     }                                                                 \
 }
 
-// template<int ATTN_F, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using q_tile = rt<T, CHUNK_SIZE, ATTN_F, L, S>;
-// template<int ATTN_F, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using q_tile_transposed = rt<T, ATTN_F, CHUNK_SIZE, L, S>;
-// template<int ATTN_F, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using k_tile = rt<T, CHUNK_SIZE, ATTN_F, L, S>;
-// template<int ATTN_D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using v_tile = rt<T, CHUNK_SIZE, ATTN_D, L, S>;
-// template<int ATTN_F, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using k_tile_transposed = rt<T, ATTN_F, CHUNK_SIZE, L, S>;
-// template<int ATTN_D, typename T=float, typename L=col_l, typename S=rt_16x32_4_s> using attn_tile = rt<T, CHUNK_SIZE, CHUNK_SIZE, L, S>;
-// template<int ATTN_D, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using o_tile = rt<T, CHUNK_SIZE, ATTN_D, L, S>;
-// template<int ATTN_D, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using o_tile_transposed = rt<T, ATTN_D, CHUNK_SIZE, L, S>;
 
 template<int F, typename T=bf16, typename L=row_l, typename S=rt_32x16_s> using q_tile = rt<T, CHUNK_SIZE, F, L, S>;
 template<int F, typename T=bf16, typename L=col_l, typename S=rt_16x32_s> using q_tile_transposed = rt<T, F, CHUNK_SIZE, L, S>;
@@ -253,13 +375,6 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
     constexpr int sizeof_shared = sizeof(q_smem) + sizeof(k_smem) + sizeof(v_smem) + sizeof(kv_state_smem);// + sizeof(kv_state_smem222);
     static_assert(sizeof_shared < 160000);
 
-    // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&q_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
-    // col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>> (&k_decay) = al.allocate<col_vec<st_fl<CHUNK_SIZE, ATTN_D, st_32x32_s>>>();
-    // row_vec<st_fl<ATTN_D, CHUNK_SIZE, st_32x32_s>> (&k_trans_decay) = al.allocate<row_vec<st_fl<ATTN_D, CHUNK_SIZE, st_32x32_s>>>();
-    // // decay in register
-    // col_vec<rt_fl<CHUNK_SIZE, ATTN_D, col_l, rt_32x32_s>> q_decay_rv;
-    // rt_fl<CHUNK_SIZE, ATTN_D, col_l, rt_32x32_s>::col_vec k_decay_rv;
-
     row_vec<st_bf<ATTN_D, CHUNK_SIZE, st_32x32_s>> (&q_decay) = al.allocate<row_vec<st_bf<ATTN_D, CHUNK_SIZE, st_32x32_s>>>();      // 64x2 = 128 B
     row_vec<st_bf<ATTN_D, CHUNK_SIZE, st_32x32_s>> (&k_decay) = al.allocate<row_vec<st_bf<ATTN_D, CHUNK_SIZE, st_32x32_s>>>();      // 64x2 = 128 B
     // decay in register
@@ -403,6 +518,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         //         }
         //     }
         // }
+        // print_smem<>();
 #endif
         mul(k_decay_rv, k_decay_rv, -1.0f);         // 0,-1,-2,...,-63
         add(k_decay_rv, k_decay_rv, CHUNK_SIZE);    // 64,63,62,...,1
@@ -419,6 +535,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // }
         
         // if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+        // if (thread(64)) {
         //     // packed type, bf16_2
         //     printf("blockIdx.x %d, threadIdx %d, k_decay_rv.data[0][0-7] value: (%f, %f) (%f, %f) (%f, %f) (%f, %f) (%f, %f) (%f, %f) (%f, %f) (%f, %f)\n",
         //         blockIdx.x, threadIdx.x,
@@ -439,6 +556,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // }
 #endif
     }
+    BARRIER;
 
 // #ifdef DEBUG
 //     if (blockIdx.x == 0 && blockIdx.y == 0) {
@@ -449,11 +567,11 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
 // #endif
 
     for (int block = 0; block < blocks; block++) {
-        if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
-            if (threadIdx.x == 0) {
-                printf("\n\n=======================>block: %d\n", block);
-            }
+#ifdef DEBUG
+        if (thread0()) {
+            printf("\n\n=======================>block: %d\n", block);
         }
+#endif
         zero(o_intra);
         zero(o_inter);
         // // Load Q, K, V tiles from global memory to shared memory
@@ -489,7 +607,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         transpose(k_reg_transposed, k_reg);
         mma_AtB(attn_block[0], k_reg_transposed, q_reg_transposed, attn_block[0]);
 
-        __builtin_amdgcn_sched_barrier(0);
+        // __builtin_amdgcn_sched_barrier(0);
 // #ifdef DEBUG
 //         if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
 //             DUMP_KV_STATE_SUM("after QK mma");
@@ -498,18 +616,38 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
 
         // apply diag decay
         // TODO
+#ifdef DEBUG2
+        if (thread0()) {
+            D(attn_block[0].num_packed);                // 2
+            D(attn_block[0].num_elements);              // 4096
+            D(attn_block[0].elements_per_thread);       // 64
+            D(attn_block[0].packed_per_thread);         // 32
+            D(attn_block[0].packed_per_base_tile);      // 8, 2个float pack成1个float2，16个elements per thread
+            D(attn_block[0].elements_per_base_tile);    // 16
+        }
+#endif
         const int lane_id = threadIdx.x % 64;
         for (int tr = 0; tr < attn_block[0].height; tr++){
-            // for(int tc = 0; tc < 2; tc++){
             for (int tc = 0; tc < attn_block[0].width; tc++){
                 for (int x = 0; x < attn_block[0].packed_per_base_tile; x++){
-                    const float scale_x = get_scale(lane_id % 32 + tr * 32, lane_id / 32 * 16 + x * 2, slope);
-                    const float scale_y = get_scale(lane_id % 32 + tr * 32, lane_id / 32 * 16 + x * 2 + 1, slope);
+                    // TODO: do not hard so many numbers here
+                    const float scale_x = get_scale(lane_id / 32 * 4 + x / 2 * 8 + x % 2 * 2 + tr * 32, lane_id % 32 + tc * 32, slope);
+                    const float scale_y = get_scale(lane_id / 32 * 4 + x / 2 * 8 + x % 2 * 2 + 1 + tr * 32, lane_id % 32 + tc * 32, slope);
+                    // if (threadblock0()) {
+                    //     // printf("diag_decay (%d, %d) %f (%d, %d) %f\n", xi, xj, scale_x, yi, yj, scale_y);
+                    //     printf("diag_decay (%d, %d) %.4e (%d, %d) %.4e\n", xi, xj, scale_x, yi, yj, scale_y);
+                    // }
+                    // if (thread(32)) {
+                    //     printf("lane_id %d x %d (xi, xj):(%d, %d) (yi, yj):(%d, %d)\n", lane_id, x, xi, xj, yi, yj);
+                    // }
+                    // float x_temp = attn_block[0].tiles[tr][tc].data[x].x;
+                    // float y_temp = attn_block[0].tiles[tr][tc].data[x].y;
                     attn_block[0].tiles[tr][tc].data[x].x *= scale_x;
-                    attn_block[0].tiles[tr][tc].data[x].x *= scale_y;
+                    attn_block[0].tiles[tr][tc].data[x].y *= scale_y;
                 }
             }
         }
+
 #ifdef DEBUG
         if (blockIdx.x == 0 && blockIdx.y == 0) {
             DUMP_KV_STATE_SUM("after diag_decay");
@@ -533,20 +671,12 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // v_reg * attn_block_bf16 -> o_intra, (64x32)^T * (64x64) = 32x64
         mma_AtB(o_intra, v_reg, attn_block_bf16, o_intra);
 
-        __builtin_amdgcn_s_setprio(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
+        // __builtin_amdgcn_s_setprio(0);
+        // __builtin_amdgcn_sched_barrier(0);
+        // __builtin_amdgcn_s_barrier();
+        // __builtin_amdgcn_sched_barrier(0);
 #ifdef DEBUG
-        __builtin_amdgcn_s_waitcnt(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        if (blockIdx.x == 0 && blockIdx.y == 0) {
-            // for (int i = 0; i < 8; i++) {
-            //     if (threadIdx.x == 0 && threadIdx.y == 0){
-            //         printf("after v global->smem load, kv_state_smem %f\n", float(kv_state_smem.data[i]));
-            //     }
-            // }
+        if (threadblock0()) {
             DUMP_KV_STATE_SUM("before load kv_state_smem");
         }
 #endif
@@ -606,23 +736,32 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
          */
         // O inter = q_reg * KV_state_sm
         // load(local_kv_reg, kv_state_smem);
+
+#ifdef DEBUG
+        if (thread0()) {
+            float o_inter_sum = sum_tile<float>(o_inter);
+            D(o_inter_sum);
+        }
+#endif
+
+        row_vec<rt_fl<ATTN_D, CHUNK_SIZE, col_l, rt_32x32_s>> q_decay_rv;
         load(local_kv_reg, subtile_inplace<ATTN_F/4, V_CHUNK_SIZE>(kv_state_smem, {0, 0}));
         BARRIER;
-#ifdef DEBUG
+#ifdef DEBUG1
         if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
             // tile[0][0]
-            for (int i = 0; i < 4; i++) {
-                if (threadIdx.x == 0 && threadIdx.y == 0) {
-                    printf("local_kv_reg height %d width %d\n", local_kv_reg.height, local_kv_reg.width); // 8, 4
-                    printf("local_kv_reg.tiles[0][0].data length: %zu\n", sizeof(local_kv_reg.tiles[0][0].data)/sizeof(float));
-                    float temp = __bfloat162float((local_kv_reg.tiles[0][0].data[i].x)); // HIP_vector_type<float, 2>
-                    printf("local_kv_reg.tiles[0][0].data[%d].x: %f\n", i, temp);
-                    // uint16_t val_bits = *reinterpret_cast<uint16_t*>(&local_kv_reg.tiles[0][0].data[i].x);
-                    dump_bits(&local_kv_reg.tiles[0][0].data[i].x);
-                    temp = __bfloat162float((local_kv_reg.tiles[0][0].data[i].y));
-                    printf("local_kv_reg.tiles[0][0].data[%d].y: %f\n", i, temp);
-                }
-            }
+            // for (int i = 0; i < 4; i++) {
+            //     if (threadIdx.x == 0 && threadIdx.y == 0) {
+            //         printf("local_kv_reg height %d width %d\n", local_kv_reg.height, local_kv_reg.width); // 8, 4
+            //         printf("local_kv_reg.tiles[0][0].data length: %zu\n", sizeof(local_kv_reg.tiles[0][0].data)/sizeof(float));
+            //         float temp = __bfloat162float((local_kv_reg.tiles[0][0].data[i].x)); // HIP_vector_type<float, 2>
+            //         printf("local_kv_reg.tiles[0][0].data[%d].x: %f\n", i, temp);
+            //         // uint16_t val_bits = *reinterpret_cast<uint16_t*>(&local_kv_reg.tiles[0][0].data[i].x);
+            //         dump_bits(&local_kv_reg.tiles[0][0].data[i].x);
+            //         temp = __bfloat162float((local_kv_reg.tiles[0][0].data[i].y));
+            //         printf("local_kv_reg.tiles[0][0].data[%d].y: %f\n", i, temp);
+            //     }
+            // }
             DUMP_KV_STATE_SUM("after load kv_state_smem");
             // if (threadIdx.x == 0) {
             //     bool is_all_zero = check_register_allzero(local_kv_reg);
@@ -649,7 +788,16 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         load(local_kv_reg, subtile_inplace<ATTN_F/4, V_CHUNK_SIZE>(kv_state_smem, {3, 0}));
         BARRIER;
         mma_AtB(o_inter, local_kv_reg, subtile_inplace<ATTN_F/4>(q_reg_transposed, 3), o_inter);
-        // mul_col(o_inter, o_inter, q_decay_rv); // currently commented out for o_inter debug dump
+       
+        load(q_decay_rv, q_decay);
+        BARRIER;
+#ifdef DEBUG
+        if (thread0()) {
+            float o_inter_sum = sum_tile<float>(o_inter);
+            D(o_inter_sum);
+        }
+#endif
+        mul_col(o_inter, o_inter, q_decay_rv); // currently commented out for o_inter debug dump
 
 
         // update KV state
@@ -665,26 +813,45 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // rt_fl<CHUNK_SIZE, ATTN_F/2> local_k_1;
 
         rt_fl<ATTN_F, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv;        // 128x32
-        rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128
-        // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k_bf16;      // 64x128
-        // rt_bf<ATTN_F, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv;        // 128x32
-        // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128
-        // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k_bf16;      // 64x128
+        // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128,      64x128/64/2 = 64 VGPRs
+        // optimize vgprs
+        rt_bf<CHUNK_SIZE/2, ATTN_F, col_l, rt_32x32_s> local_k;           // 32x128,      32x128/64/2 = 32 VGPRs
 
-        load(local_k, k_smem[0]);
-        col_vec<rt_bf<CHUNK_SIZE, ATTN_D, col_l, rt_32x32_s>> k_decay_rv;
-        load(k_decay_rv, k_decay);
+        load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F>(k_smem[0], {0, 0}));
+#ifdef DEBUG
+        if (thread0()) {
+            // PT(local_k);
+            float local_k_sum = sum_tile<float>(local_k);
+            D(local_k_sum);
+        }
+#endif
+        col_vec<rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_D, col_l, rt_32x32_s>> k_decay_rv; // half
+        load(k_decay_rv, subvec_inplace<CHUNK_SIZE/2>(k_decay, 0)); // 1st half
+#ifdef DEBUG
+        BARRIER;
+        if (thread0()) {
+            printf("1st half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
+                    k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
+            float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
+            D(k_decay_rv_sum);
+        }
+#endif
         mul_row(local_k, local_k, k_decay_rv);
         // copy(local_k_bf16, local_k);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
-
+        // __builtin_amdgcn_sched_barrier(0);
+        // __builtin_amdgcn_s_barrier();
+        // __builtin_amdgcn_sched_barrier(0);
+#ifdef DEBUG
+        if (thread0()) {
+            // PT(local_k);
+            float local_k_sum = sum_tile<float>(local_k);
+            D(local_k_sum);
+        }
+#endif
         float block_decay = __expf(-slope * static_cast<float>(CHUNK_SIZE));
-        // bf16 block_decay = __float2bfloat16(__expf(-slope * static_cast<float>(CHUNK_SIZE)));
 
         load(local_kv, kv_state_smem);
-#ifdef DEBUG
+#ifdef DEBUG1
         if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
             // tile[0][0]
             for (int i = 0; i < 4; i++) {
@@ -707,46 +874,81 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // A: k_reg [CHUNK_SIZE, ATTN_F], 64x128, bf16
         // A: local_k_bf16, [CHUNK_SIZE, ATTN_F], 64x128, bf16
         // B: [CHUNK_SIZE, ATTN_D], 64x128
-        // mma_AtB(local_kv, local_k_bf16, v_reg, local_kv);
-        mma_AtB(local_kv, local_k, v_reg, local_kv);
-        __builtin_amdgcn_s_setprio(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
+        mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 0), local_kv);
+        // __builtin_amdgcn_s_setprio(0);
+        // __builtin_amdgcn_sched_barrier(0);
+        // __builtin_amdgcn_s_barrier();
+        // __builtin_amdgcn_sched_barrier(0);
+
+        load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F>(k_smem[0], {1, 0}));
+        load(k_decay_rv, subvec_inplace<CHUNK_SIZE/2>(k_decay, 1)); // 2nd half
+#ifdef DEBUG
+        BARRIER;
+        if (thread0()) {
+            printf("2nd half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
+                    k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
+            float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
+            D(k_decay_rv_sum);
+        }
+#endif
+        mul_row(local_k, local_k, k_decay_rv);
+        mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 1), local_kv);
+        BARRIER;
+
 
         
         // store updated kv state
+#ifdef DEBUG
+        // PT(local_kv);
+        if (thread(0)) {
+            float local_kv_sum = sum_tile<float>(local_kv);
+            D(local_kv_sum);
+        }
+        BARRIER;
+        // if (thread(1)) {
+        //     float local_kv_sum = sum_tile<float>(local_kv);
+        //     D(local_kv_sum);
+        // }
+        // BARRIER;
+#endif
         // TODO
         store(kv_state_smem, local_kv);
-        asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(0)");
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
+        BARRIER;
+        // asm volatile("s_waitcnt lgkmcnt(0)");
+        // asm volatile("s_waitcnt vmcnt(0)");
+        // __builtin_amdgcn_sched_barrier(0);
+        // __builtin_amdgcn_s_barrier();
+        // __builtin_amdgcn_sched_barrier(0);
 #ifdef DEBUG
-        if (threadIdx.x == 0 && threadIdx.y == 0) {
-            float kv_state_sum = 0.0f;
-            for (int i = 0; i < ATTN_F*V_CHUNK_SIZE; i++) {
-                kv_state_sum += float(kv_state_smem.data[i]);
-            }
-            printf("after store updated local_kv to kv_state_smem, kv_state_sum %f\n", kv_state_sum);
+        // if (threadIdx.x == 0 && threadIdx.y == 0) {
+        //     float kv_state_sum = 0.0f;
+        //     for (int i = 0; i < ATTN_F*V_CHUNK_SIZE; i++) {
+        //         kv_state_sum += float(kv_state_smem.data[i]);
+        //     }
+        //     printf("after store updated local_kv to kv_state_smem, kv_state_sum %f\n", kv_state_sum);
+        // }
+        
+        if (threadblock0()) {
+            // print_smem<ATTN_F, V_CHUNK_SIZE>(kv_state_smem.data);
+            DUMP_KV_STATE_SUM("after store updated local_kv to kv_state_smem");
         }
 #endif
 
        // o_intra + o_inter
        // o_intra [V_CHUNK_SIZE, CHUNK_SIZE] 32x64, o_inter [V_CHUNK_SIZE, CHUNK_SIZE]
-       add(o_intra, o_inter, o_intra);
+       add(o_intra, o_inter, o_intra); // commented out for o_intra w/o mask debug
 
         
-       o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed; // [CHUNK_SIZE, V_CHUNK_SIZE]
-       transpose(o_reg_transposed, o_intra);
+        o_tile<ATTN_D, float, row_l, rt_32x32_s> o_reg_transposed; // [CHUNK_SIZE, V_CHUNK_SIZE]
+        transpose(o_reg_transposed, o_intra);
 
-       store<1>(globals.Og, o_reg_transposed, {batch_idx, block, head_idx, 0});
+        store<1>(globals.Og, o_reg_transposed, {batch_idx, block, head_idx, v_block_idx});
 
-        // debug dump o_inter
-        o_tile<ATTN_D, float, row_l, rt_32x32_s> o_inter_transposed; // [CHUNK_SIZE, V_CHUNK_SIZE]
-        transpose(o_inter_transposed, o_inter);
-        store<1>(globals.ODEBUGg, o_inter_transposed, {batch_idx, block, head_idx, 0});
+        // // debug dump o_inter
+        // o_tile<ATTN_D, float, row_l, rt_32x32_s> o_inter_transposed; // [CHUNK_SIZE, V_CHUNK_SIZE]
+        // transpose(o_inter_transposed, o_inter);
+        // store<1>(globals.ODEBUGg, o_inter_transposed, {batch_idx, block, head_idx, v_block_idx}); // dump o_inter
+        // // store<1>(globals.ODEBUGg, o_reg_transposed, {batch_idx, block, head_idx, v_block_idx}); // dump o_intra
     }
 }
 
@@ -841,17 +1043,19 @@ inline void __hipCheckError( const char *file, const int line ) {
 }
 
 int main(int argc, char **argv) {
-    // constexpr int B = 16;
+    constexpr int B = 16;
+    constexpr int D = 128;
+    constexpr int H = 8;
+    constexpr int F = 128;
+    constexpr int N = 1024;
+
+    // constexpr int B = 4;
     // constexpr int D = 128;
     // constexpr int H = 8;
     // constexpr int F = 128;
+    // // constexpr int N = 64;
+    // // constexpr int N = 128;
     // constexpr int N = 1024;
-    constexpr int B = 1;
-    constexpr int D = 128;
-    constexpr int H = 1;
-    constexpr int F = 128;
-    constexpr int N = 64;
-    // constexpr int N = 128;
 
     constexpr int warmup_iters = 1;
     constexpr int timing_iters = 1;

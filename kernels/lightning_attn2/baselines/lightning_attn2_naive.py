@@ -103,9 +103,14 @@ def _fwd_kernel(
             mask=off_block[:, None] < n,
         )
         # debug dump
+        # tl.store(
+        #     O_debug_block_ptr + off_block[:, None] * e,
+        #     o_inter_raw.to(O_debug_block_ptr.dtype.element_ty), # dump o_inter
+        #     mask=off_block[:, None] < n,
+        # )
         tl.store(
             O_debug_block_ptr + off_block[:, None] * e,
-            o_inter_raw.to(O_debug_block_ptr.dtype.element_ty), # dump o_inter
+            o_intra.to(O_debug_block_ptr.dtype.element_ty), # dump o_inter
             mask=off_block[:, None] < n,
         )
 

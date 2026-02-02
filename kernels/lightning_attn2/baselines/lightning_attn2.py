@@ -54,6 +54,7 @@ def _fwd_kernel(
     diag_decay = tl.exp(s_index)    # 64x64
     
     kv = tl.zeros([d, BLOCK_MODEL], dtype=tl.float32) # 128x32
+    kv = tl.full([d, BLOCK_MODEL], value=1.0, dtype=tl.float32) # temp
     # import pdb
     # pdb.set_trace()
 

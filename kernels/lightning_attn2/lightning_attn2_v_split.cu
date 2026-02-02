@@ -673,7 +673,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         col_vec<rt_fl<CHUNK_SIZE, ATTN_D, col_l, rt_32x32_s>> k_decay_rv;
         load(k_decay_rv, k_decay);
         mul_row(local_k, local_k, k_decay_rv);
-        mul_row(k_reg, k_reg, k_decay_rv);
+        // mul_row(k_reg, k_reg, k_decay_rv);
         copy(local_k_bf16, local_k);
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
