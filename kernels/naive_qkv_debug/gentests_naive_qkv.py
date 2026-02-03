@@ -8,7 +8,7 @@ import numpy as np
 
 D_QK = 128
 D_VO = 128
-CHUNK_SIZE = 64
+CHUNK_SIZE = 32
 
 def generate_inputs(B, H, N):
     q = torch.randn((B, H, N, D_QK), dtype=torch.bfloat16, device='cuda') / (D_QK ** 0.5)
@@ -72,6 +72,8 @@ def linear_attn_naive_qkv_lightning_version(q, k, v):
     num_chunks = (n + CHUNK_SIZE - 1) // CHUNK_SIZE
     # o_qk = torch.zeros(b, h, n, CHUNK_SIZE).to(q.device).to(torch.bfloat16)
     o = torch.empty_like(q)
+    # debug dump QK
+    o_debug = torch.zeros((b, h, n, CHUNK_SIZE), dtype=torch.bfloat16, device='cuda')
 
     for i in range(num_chunks):
         start = i * CHUNK_SIZE
@@ -83,10 +85,19 @@ def linear_attn_naive_qkv_lightning_version(q, k, v):
         qk = torch.matmul(q_chunk, k_chunk.transpose(2, 3))
         o_chunk = torch.matmul(qk, v_chunk)
         o[:, :, start:end, :] = o_chunk
-    return o
+        o_debug[:,:, start:end, :] = qk
+        # print(f"attn score {qk.sum()}")
+    # import numpy as np
+    # block_size = CHUNK_SIZE
+    # np.save(f"o_chunk_{block_size}.npy", o.to(torch.float32).cpu().numpy())
+    # import pdb; pdb.set_trace()
+    return o, o_debug
 
-def save_test_case(q, k, v, s, o, n):
-    filename = f'naive_qkv_randn_{n}.txt'
+def save_test_case(q, k, v, s, o, n, o_debug=None):
+    # filename = f'naive_qkv_randn_{n}.txt'
+    bsz, seq_len, num_heads, dim = q.shape
+    block_size = CHUNK_SIZE
+    filename = f'naive_qkv_randn_b{bsz}_n{n}_h{num_heads}_d{dim}_chunk{block_size}.txt'
     print(f"slopes: {s}")
     import pdb
     pdb.set_trace()
@@ -122,6 +133,13 @@ def save_test_case(q, k, v, s, o, n):
         for i in trange(len(of)):
             f.write(repr(of[i]))
             f.write(' ')
+        
+        if o_debug is not None:
+            o_debug_f = o_debug.to(torch.float32).flatten().cpu().numpy().tolist()
+            import pdb; pdb.set_trace()
+            for i in trange(len(o_debug_f)):
+                f.write(repr(o_debug_f[i]))
+                f.write(' ')
 
 def main():
     torch.manual_seed(0)
@@ -131,6 +149,7 @@ def main():
 
     # B, H = 1, 1
     # sequence_lengths = [64]
+    # sequence_lengths = [32]
     # sequence_lengths = [128]
     # sequence_lengths = [1024]
     
@@ -142,7 +161,8 @@ def main():
         # pytorch_out = linear_attn(q, k, v, s)
         # pytorch_out = linear_attn_naive_qkv(q, k, v)
         # pytorch_out = linear_attn_naive_qk_lightning_version(q, k, v)
-        pytorch_out = linear_attn_naive_qkv_lightning_version(q, k, v)
+        # pytorch_out = linear_attn_naive_qkv_lightning_version(q, k, v)
+        pytorch_out, o_debug = linear_attn_naive_qkv_lightning_version(q, k, v)
         import pdb
         pdb.set_trace()
         # triton_out = lightning_attn2(q, k, v, s)
@@ -159,7 +179,8 @@ def main():
         # print(f"Average difference between PyTorch and Triton: {avg_diff}")
         
         # save_test_case(q, k, v, s, triton_out, N)
-        save_test_case(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), s, pytorch_out.transpose(1, 2), N) # for amd layout
+        # save_test_case(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), s, pytorch_out.transpose(1, 2), N) # for amd layout
+        save_test_case(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), s, pytorch_out.transpose(1, 2), N, o_debug.transpose(1, 2)) # for amd layout
         print(f"Generated random test case for N={N}")
 
 if __name__ == "__main__":
