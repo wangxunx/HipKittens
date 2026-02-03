@@ -45,7 +45,7 @@ constexpr int CHUNK_SIZE = 64;
 // constexpr int ATTN_F = 128;  // number of features
 // #endif
 // #ifndef ATTN_N
-// constexpr int ATTN_N = 1024;//128;//64;//1024; // sequence length
+// constexpr int ATTN_N = 64;//128;//64;//1024; // sequence length
 // #endif
 // constexpr int CHUNK_SIZE = 64;
 
@@ -53,7 +53,7 @@ constexpr int CHUNK_SIZE = 64;
 constexpr int V_CHUNK_SIZE = 32;
 
 constexpr int CHUNK_SIZE_SPLIT = 2;
-constexpr int KV_STATE_F_SPLIT = 2;
+constexpr int KV_STATE_F_SPLIT = 4;
 
 using namespace kittens;
 
@@ -698,7 +698,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         row_vec<rt_bf<ATTN_D, CHUNK_SIZE, col_l, rt_32x32_s>> q_decay_rv;
         load(local_kv_reg, subtile_inplace<ATTN_F/4, V_CHUNK_SIZE>(kv_state_smem, {0, 0}));
         BARRIER;
-#ifdef DEBUG1
+#ifdef DEBUG
         if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
             DUMP_KV_STATE_SUM("after load kv_state_smem");
         }
@@ -746,76 +746,154 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         // rt_fl<CHUNK_SIZE, ATTN_F/2> local_k_0;
         // rt_fl<CHUNK_SIZE, ATTN_F/2> local_k_1;
 
-        rt_fl<ATTN_F, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv;        // 128x32，128x32/64 = 32 VGPRs
-        // rt_bf<CHUNK_SIZE, ATTN_F, col_l, rt_32x32_s> local_k;           // 64x128,      64x128/64/2 = 64 VGPRs
-        // optimize vgprs
-        rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F, col_l, rt_32x32_s> local_k;           // 32x128,      32x128/64/2 = 32 VGPRs
+        // rt_fl<ATTN_F, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv;        // 128x32，128x32/64 = 32 VGPRs
+        // rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F, col_l, rt_32x32_s> local_k;           // 32x128,      32x128/64/2 = 32 VGPRs
+        // further optimize vgprs
+        rt_fl<ATTN_F / KV_STATE_F_SPLIT, V_CHUNK_SIZE, col_l, rt_32x32_s> local_kv; // 128/KV_STATE_F_SPLIT x 32 = 64x32, 128/2 x32/64 = 16 VGPRs
+        rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F / KV_STATE_F_SPLIT, col_l, rt_32x32_s> local_k;           // 32x128/KV_STATE_F_SPLIT = 32x64,      32x128/2 /64/2 = 16 VGPRs
 
-        load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F>(k_smem[0], {0, 0}));
-#ifdef DEBUG
-        if (thread0()) {
-            float local_k_sum = sum_tile<float>(local_k);
-            D(local_k_sum);
-        }
-#endif
-        col_vec<rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_D, col_l, rt_32x32_s>> k_decay_rv; // half
-        load(k_decay_rv, subvec_inplace<CHUNK_SIZE/2>(k_decay, 0)); // 1st half
-#ifdef DEBUG
-        BARRIER;
-        if (thread0()) {
-            printf("1st half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
-                    k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
-            float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
-            D(k_decay_rv_sum);
-        }
-#endif
-        mul_row(local_k, local_k, k_decay_rv);
-        // copy(local_k_bf16, local_k);
-#ifdef DEBUG
-        if (thread0()) {
-            float local_k_sum = sum_tile<float>(local_k);
-            D(local_k_sum);
-        }
-#endif
-        float block_decay = __expf(-slope * static_cast<float>(CHUNK_SIZE));
+        for (int kv_idx = 0; kv_idx < KV_STATE_F_SPLIT; kv_idx++) {
 
-        load(local_kv, kv_state_smem);
-        mul(local_kv, local_kv, block_decay);
-        // D: 128x128 float
-        // A: k_reg_transposed [ATTN_F, CHUNK_SIZE], 128x64, bf16
-        // A: k_reg [CHUNK_SIZE, ATTN_F], 64x128, bf16
-        // A: local_k_bf16, [CHUNK_SIZE, ATTN_F], 64x128, bf16
-        // B: [CHUNK_SIZE, ATTN_D], 64x128
-        mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 0), local_kv);
-        load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F>(k_smem[0], {1, 0}));
-        load(k_decay_rv, subvec_inplace<CHUNK_SIZE/2>(k_decay, 1)); // 2nd half
+            load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F/KV_STATE_F_SPLIT>(k_smem[0], {0, kv_idx}));
 #ifdef DEBUG
-        BARRIER;
-        if (thread0()) {
-            printf("2nd half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
-                    k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
-            float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
-            D(k_decay_rv_sum);
-        }
+            if (thread0()) {
+                float local_k_sum = sum_tile<float>(local_k);
+                D(local_k_sum);
+            }
 #endif
-        mul_row(local_k, local_k, k_decay_rv);
-        mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 1), local_kv);
-        BARRIER;
+            col_vec<rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F, col_l, rt_32x32_s>> k_decay_rv; // half
+            // col_vec<rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F/KV_STATE_F_SPLIT, col_l, rt_32x32_s>> k_decay_rv; // half
+            load(k_decay_rv, subvec_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(k_decay, 0)); // 1st half
+#ifdef DEBUG
+            BARRIER;
+            if (thread0()) {
+                printf("1st half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
+                        k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
+                float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
+                D(k_decay_rv_sum);
+            }
+#endif
+            mul_row(local_k, local_k, k_decay_rv);
+            // copy(local_k_bf16, local_k);
+#ifdef DEBUG
+            if (thread0()) {
+                float local_k_sum = sum_tile<float>(local_k);
+                D(local_k_sum);
+            }
+#endif
+            float block_decay = __expf(-slope * static_cast<float>(CHUNK_SIZE));
+
+            // load(local_kv, kv_state_smem);
+            load(local_kv, subtile_inplace<ATTN_F / KV_STATE_F_SPLIT, V_CHUNK_SIZE>(kv_state_smem, {kv_idx, 0}));
+            mul(local_kv, local_kv, block_decay);
+            // D: 128x128 float
+            // A: k_reg_transposed [ATTN_F, CHUNK_SIZE], 128x64, bf16
+            // A: k_reg [CHUNK_SIZE, ATTN_F], 64x128, bf16
+            // A: local_k_bf16, [CHUNK_SIZE, ATTN_F], 64x128, bf16
+            // B: [CHUNK_SIZE, ATTN_D], 64x128
+            mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 0), local_kv);
+            load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F/KV_STATE_F_SPLIT>(k_smem[0], {1, kv_idx}));
+
+            col_vec<rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F/KV_STATE_F_SPLIT, col_l, rt_32x32_s>> k_decay_rv1; 
+            load(k_decay_rv1, subvec_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(k_decay, 1)); // 2nd half
+#ifdef DEBUG
+            BARRIER;
+            if (thread0()) {
+                printf("2nd half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
+                        k_decay_rv1.outer_dim, k_decay_rv1.inner_dim, k_decay_rv1.elements_per_thread, k_decay_rv1.packing); // 1, 8, 16, 2
+                float k_decay_rv_sum = sum_rv<float>(k_decay_rv1);
+                D(k_decay_rv_sum);
+            }
+#endif
+            mul_row(local_k, local_k, k_decay_rv1);
+            mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 1), local_kv);
+            BARRIER;
+
+
+            
+            // store updated kv state
+#ifdef DEBUG
+            // PT(local_kv);
+            if (thread(0)) {
+                float local_kv_sum = sum_tile<float>(local_kv);
+                D(local_kv_sum);
+            }
+            BARRIER;
+#endif
+            // TODO
+            // {
+            // store(subtile_inplace<ATTN_F / KV_STATE_F_SPLIT, V_CHUNK_SIZE>(kv_state_smem, {kv_idx, 0}), local_kv);
+            auto kv_subtile = subtile_inplace<ATTN_F / KV_STATE_F_SPLIT, V_CHUNK_SIZE>(kv_state_smem, {kv_idx, 0});
+            store(kv_subtile, local_kv);
+            // }
+            BARRIER;
+        }
+
+//         load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F>(k_smem[0], {0, 0}));
+// #ifdef DEBUG
+//         if (thread0()) {
+//             float local_k_sum = sum_tile<float>(local_k);
+//             D(local_k_sum);
+//         }
+// #endif
+//         col_vec<rt_bf<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_D, col_l, rt_32x32_s>> k_decay_rv; // half
+//         load(k_decay_rv, subvec_inplace<CHUNK_SIZE/2>(k_decay, 0)); // 1st half
+// #ifdef DEBUG
+//         BARRIER;
+//         if (thread0()) {
+//             printf("1st half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
+//                     k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
+//             float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
+//             D(k_decay_rv_sum);
+//         }
+// #endif
+//         mul_row(local_k, local_k, k_decay_rv);
+//         // copy(local_k_bf16, local_k);
+// #ifdef DEBUG
+//         if (thread0()) {
+//             float local_k_sum = sum_tile<float>(local_k);
+//             D(local_k_sum);
+//         }
+// #endif
+//         float block_decay = __expf(-slope * static_cast<float>(CHUNK_SIZE));
+
+//         load(local_kv, kv_state_smem);
+//         mul(local_kv, local_kv, block_decay);
+//         // D: 128x128 float
+//         // A: k_reg_transposed [ATTN_F, CHUNK_SIZE], 128x64, bf16
+//         // A: k_reg [CHUNK_SIZE, ATTN_F], 64x128, bf16
+//         // A: local_k_bf16, [CHUNK_SIZE, ATTN_F], 64x128, bf16
+//         // B: [CHUNK_SIZE, ATTN_D], 64x128
+//         mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 0), local_kv);
+//         load(local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT, ATTN_F>(k_smem[0], {1, 0}));
+//         load(k_decay_rv, subvec_inplace<CHUNK_SIZE/2>(k_decay, 1)); // 2nd half
+// #ifdef DEBUG
+//         BARRIER;
+//         if (thread0()) {
+//             printf("2nd half k_decay_rv outer_dim %d inner_dim %d elements_per_thread %d packing %d\n",
+//                     k_decay_rv.outer_dim, k_decay_rv.inner_dim, k_decay_rv.elements_per_thread, k_decay_rv.packing); // 1, 8, 16, 2
+//             float k_decay_rv_sum = sum_rv<float>(k_decay_rv);
+//             D(k_decay_rv_sum);
+//         }
+// #endif
+//         mul_row(local_k, local_k, k_decay_rv);
+//         mma_AtB(local_kv, local_k, subtile_inplace<CHUNK_SIZE/CHUNK_SIZE_SPLIT>(v_reg, 1), local_kv);
+//         BARRIER;
 
 
         
-        // store updated kv state
-#ifdef DEBUG
-        // PT(local_kv);
-        if (thread(0)) {
-            float local_kv_sum = sum_tile<float>(local_kv);
-            D(local_kv_sum);
-        }
-        BARRIER;
-#endif
-        // TODO
-        store(kv_state_smem, local_kv);
-        BARRIER;
+//         // store updated kv state
+// #ifdef DEBUG
+//         // PT(local_kv);
+//         if (thread(0)) {
+//             float local_kv_sum = sum_tile<float>(local_kv);
+//             D(local_kv_sum);
+//         }
+//         BARRIER;
+// #endif
+//         // TODO
+//         store(kv_state_smem, local_kv);
+//         BARRIER;
 
 #ifdef DEBUG
         if (threadblock0()) {
@@ -824,6 +902,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         }
 #endif
 
+        BARRIER;
        // o_intra + o_inter
        // o_intra [V_CHUNK_SIZE, CHUNK_SIZE] 32x64, o_inter [V_CHUNK_SIZE, CHUNK_SIZE]
     //    add(o_intra, o_inter, o_intra); // commented out for o_intra w/o mask debug
@@ -984,12 +1063,12 @@ int main(int argc, char **argv) {
     // constexpr int D = 128;
     // constexpr int H = 1;
     // constexpr int F = 128;
-    // // constexpr int N = 64;
+    // constexpr int N = 64;
     // // constexpr int N = 128;
-    // constexpr int N = 1024;
+    // // constexpr int N = 1024;
 
-    constexpr int warmup_iters = 1;
-    constexpr int timing_iters = 1;
+    // constexpr int warmup_iters = 1;
+    // constexpr int timing_iters = 1;
 
     int TOTAL_ELEMENTS_QK = B * H * N * D;
     int TOTAL_ELEMENTS_VO = B * H * N * F;

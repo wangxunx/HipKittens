@@ -747,7 +747,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         row_vec<rt_fl<ATTN_D, CHUNK_SIZE, col_l, rt_32x32_s>> q_decay_rv;
         load(local_kv_reg, subtile_inplace<ATTN_F/4, V_CHUNK_SIZE>(kv_state_smem, {0, 0}));
         BARRIER;
-#ifdef DEBUG1
+#ifdef DEBUG
         if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
             // tile[0][0]
             // for (int i = 0; i < 4; i++) {
@@ -851,7 +851,7 @@ void lightning_attn2_kernel(const lightning_attn2_globals globals, int N)
         float block_decay = __expf(-slope * static_cast<float>(CHUNK_SIZE));
 
         load(local_kv, kv_state_smem);
-#ifdef DEBUG1
+#ifdef DEBUG
         if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
             // tile[0][0]
             for (int i = 0; i < 4; i++) {
@@ -1042,6 +1042,46 @@ inline void __hipCheckError( const char *file, const int line ) {
     }
 }
 
+// Calculate FLOPs for Lightning Attention-2
+// For matmul A(m,k) @ B(k,n), FLOPs = 2*m*k*n (multiply-add counts as 2 ops)
+double calculate_lightning_attn2_flops(int B, int H, int N, int D, int F) {
+    // const int CHUNK_SIZE = 64;
+    const int num_blocks = N / CHUNK_SIZE;
+
+    double flops_per_block = 0;
+
+    // 1. QK^T: (CHUNK_SIZE, D) @ (D, CHUNK_SIZE) = (CHUNK_SIZE, CHUNK_SIZE)
+    //    FLOPs = 2 * CHUNK_SIZE * D * CHUNK_SIZE
+    flops_per_block += 2.0 * CHUNK_SIZE * D * CHUNK_SIZE;
+
+    // 2. diag decay
+    flops_per_block += CHUNK_SIZE * CHUNK_SIZE;
+
+    // 3. Attention @ V: (CHUNK_SIZE, CHUNK_SIZE) @ (CHUNK_SIZE, F) = (CHUNK_SIZE, F)
+    //    FLOPs = 2 * CHUNK_SIZE * CHUNK_SIZE * F
+    flops_per_block += 2.0 * CHUNK_SIZE * CHUNK_SIZE * F;
+
+    // 4. Q @ KV_state: (CHUNK_SIZE, D) @ (D, F) = (CHUNK_SIZE, F)
+    //    FLOPs = 2 * CHUNK_SIZE * D * F
+    flops_per_block += 2.0 * CHUNK_SIZE * D * F;
+
+    // 5. Q decay
+    flops_per_block += CHUNK_SIZE * F;
+
+    // 6. K^T @ V (update KV state): (D, CHUNK_SIZE) @ (CHUNK_SIZE, F) = (D, F)
+    //    FLOPs = 2 * D * CHUNK_SIZE * F
+    flops_per_block += 2.0 * D * CHUNK_SIZE * F;
+
+    // 7.K decay
+    flops_per_block += CHUNK_SIZE * D;
+
+    // Total FLOPs = flops_per_block * num_blocks * num_heads * batch_size
+    double total_flops = flops_per_block * num_blocks * H * B;
+
+    return total_flops;
+}
+
+
 int main(int argc, char **argv) {
     constexpr int B = 16;
     constexpr int D = 128;
@@ -1049,16 +1089,16 @@ int main(int argc, char **argv) {
     constexpr int F = 128;
     constexpr int N = 1024;
 
-    // constexpr int B = 4;
+    // constexpr int B = 1;
     // constexpr int D = 128;
-    // constexpr int H = 8;
+    // constexpr int H = 1;
     // constexpr int F = 128;
-    // // constexpr int N = 64;
+    // constexpr int N = 64;
     // // constexpr int N = 128;
-    // constexpr int N = 1024;
+    // // constexpr int N = 1024;
 
-    constexpr int warmup_iters = 1;
-    constexpr int timing_iters = 1;
+    // constexpr int warmup_iters = 1;
+    // constexpr int timing_iters = 1;
 
     int TOTAL_ELEMENTS_QK = B * H * N * D;
     int TOTAL_ELEMENTS_VO = B * H * N * F;
@@ -1168,13 +1208,36 @@ int main(int argc, char **argv) {
     );
 
     // Run kernel
-    const int ITER = 1;
+    constexpr int WARMUP_ITERS = 5;
+    constexpr int TIMING_ITERS = 10;
     hipDeviceSynchronize();
     HipCheckError();
 
     std::cout << "Starting kernel with " << B * H << " blocks and " << NUM_THREADS << " threads\n";
-    float avg_us = 0;
-    for(int i = 0; i < ITER; i++) {
+
+    // Warmup iterations
+    std::cout << "Running " << WARMUP_ITERS << " warmup iterations..." << std::endl;
+    for(int i = 0; i < WARMUP_ITERS; i++) {
+        // zero out d_o
+        hipMemset(d_o, 0, TOTAL_ELEMENTS_VO * sizeof(bf16));
+        // debug dump
+        hipMemset(d_debug_o, 0, TOTAL_ELEMENTS_DEBUGO * sizeof(bf16));
+        hipDeviceSynchronize();
+
+        lightning_attn2_kernel<<<g.grid(), g.block(), mem_size>>>(g, N);
+        hipDeviceSynchronize();
+        HipCheckError();
+    }
+    std::cout << "Warmup complete." << std::endl;
+
+    // Timing iterations
+    std::cout << "Running " << TIMING_ITERS << " timing iterations..." << std::endl;
+    float total_us = 0;
+    float min_us = std::numeric_limits<float>::max();
+    float max_us = 0;
+    std::vector<float> latencies;
+    latencies.reserve(TIMING_ITERS);
+    for(int i = 0; i < TIMING_ITERS; i++) {
         // zero out d_o
         hipMemset(d_o, 0, TOTAL_ELEMENTS_VO * sizeof(bf16));
         // debug dump
@@ -1188,10 +1251,42 @@ int main(int argc, char **argv) {
         hipDeviceSynchronize();
         const auto finish = std::chrono::high_resolution_clock::now();
         HipCheckError();
-        avg_us += std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count();
+        float iter_us = std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count();
+        latencies.push_back(iter_us);
+        total_us += iter_us;
+        min_us = std::min(min_us, iter_us);
+        max_us = std::max(max_us, iter_us);
+
+        std::cout << "  Iteration " << i << ": " << iter_us << " us" << std::endl;
     }
-    avg_us /= ITER;
-    std::cout << "Average execution time: " << avg_us << " us" << std::endl;
+    float avg_us = total_us / TIMING_ITERS;
+    // Calculate standard deviation
+    float variance = 0;
+    for(float latency : latencies) {
+        variance += (latency - avg_us) * (latency - avg_us);
+    }
+    variance /= TIMING_ITERS;
+    float stddev_us = std::sqrt(variance);
+    // Print statistics
+    std::cout << "\n=== Kernel Performance Statistics ===" << std::endl;
+    std::cout << "Average latency: " << avg_us << " us" << std::endl;
+    std::cout << "Minimum latency: " << min_us << " us" << std::endl;
+    std::cout << "Maximum latency: " << max_us << " us" << std::endl;
+    std::cout << "Std deviation:   " << stddev_us << " us" << std::endl;
+    std::cout << "Throughput:      " << (1000000.0 / avg_us) << " iterations/s" << std::endl;
+    std::cout << "====================================" << std::endl;
+    // Calculate and print FLOPs metrics
+    double total_flops = calculate_lightning_attn2_flops(B, H, N, ATTN_D, ATTN_F);
+    double tflops = total_flops / 1e12;
+    double avg_tflops_per_sec = tflops / (avg_us / 1e6);
+    double peak_tflops_per_sec = tflops / (min_us / 1e6);
+
+    std::cout << "\n=== FLOPs Analysis ===" << std::endl;
+    std::cout << "Total FLOPs:     " << total_flops / 1e9 << " GFLOPs" << std::endl;
+    std::cout << "                 " << tflops << " TFLOPs" << std::endl;
+    std::cout << "Avg Performance: " << avg_tflops_per_sec << " TFLOPs/s" << std::endl;
+    std::cout << "Peak Performance:" << peak_tflops_per_sec << " TFLOPs/s" << std::endl;
+    std::cout << "====================================" << std::endl;
 
     // Copy results back and compare
     hipMemcpy(o_bf, d_o, TOTAL_ELEMENTS_VO * sizeof(bf16), hipMemcpyDeviceToHost);
